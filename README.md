@@ -48,32 +48,60 @@ python3 terraform_migrate.py export
 
 Creates `terraform_export_[timestamp].json` with ALL settings from Terraform state.
 
-## 📊 What Gets Exported
+## 📊 What Gets Migrated
 
-Everything managed by the Terraform Frontegg provider:
+### ✅ Workspace Settings (via Terraform)
+All workspace-level configurations are exported and can be migrated:
 
-### Core Settings
+**Core Settings:**
 - Workspace name, country, backend/frontend stacks
-- Frontegg domain (from API)
-- Allowed origins (from API)
+- Frontegg domain (fetched via API)
+- Allowed origins (fetched via API)
 - Open SaaS configuration
-
-### Security Policies
-- **MFA Policy** - Enforcement, device remembering, expiration
-- **Password Policy** - Length, complexity, history, passphrases
-- **Lockout Policy** - Max attempts
-- **CAPTCHA Policy** - Bot protection
-
-### Authentication
-- **Hosted Login** - Redirect URLs
-- **SAML Configuration** - ACS URL, Entity ID, redirect
-- **OIDC Configuration** - Redirect URLs
-- **SSO Multi-tenant Policy**
-- **MFA Authentication App** - Service name
-
-### Additional Settings
 - Custom domains
-- All other workspace-level configurations
+
+**Security Policies:**
+- **MFA Policy** - Enforcement mode, device remembering, expiration time
+- **MFA Authentication App** - Service name configuration
+- **Password Policy** - Min/max length, complexity requirements, passphrase settings, history
+- **Lockout Policy** - Maximum login attempts
+- **CAPTCHA Policy** - Bot protection settings
+
+**Authentication & SSO:**
+- **Hosted Login** - Allowed redirect URLs
+- **SAML Configuration** - ACS URL, SP Entity ID, redirect URL
+- **OIDC Configuration** - Redirect URLs
+- **SSO Multi-tenant Policy** - Domain-based SSO rules
+
+### ❌ What Does NOT Get Migrated
+
+The following are NOT included in the workspace export and must be configured separately:
+
+**User Data:**
+- Users and their passwords
+- User sessions and tokens
+- User-specific settings
+
+**Tenant Data:**
+- Tenant configurations
+- Tenant-specific customizations
+- Tenant API tokens
+
+**Application-Level Settings:**
+- Email templates
+- Webhooks and prehooks
+- Roles and permissions
+- API secrets and keys
+- Social login configurations (Google, GitHub, etc.)
+- Custom branding and themes
+
+**Integration Settings:**
+- Third-party integrations
+- External user sources (Auth0, Cognito, Firebase)
+- Webhook secrets
+- OAuth client secrets
+
+**Note:** These items require separate API-based migration tools or manual configuration in the target account.
 
 ## 🔄 Migration to Another Account
 

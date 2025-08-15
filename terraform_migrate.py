@@ -199,7 +199,7 @@ allowed_origins     = ["http://localhost:3000"]
 resource "frontegg_workspace" "main" {
   name                = "Imported"
   country             = "US"
-  backend_stack       = "Node.js"
+  backend_stack       = "Node"
   frontend_stack      = "React"
   open_saas_installed = false
   frontegg_domain     = "imported.frontegg.com"
@@ -302,7 +302,7 @@ allowed_origins = {json.dumps(api_info.get('allowed_origins', []), indent=2)}
 # Workspace settings
 workspace_name  = "{workspace.get('name', 'My Application')}"
 country         = "{workspace.get('country', 'US')}"
-backend_stack   = "{workspace.get('backend_stack', 'Node.js')}"
+backend_stack   = "{workspace.get('backend_stack', 'Node')}"
 frontend_stack  = "{workspace.get('frontend_stack', 'React')}"
 '''
         
@@ -334,7 +334,7 @@ frontend_stack  = "{workspace.get('frontend_stack', 'React')}"
 resource "frontegg_workspace" "main" {
   name                = "Imported"
   country             = "US"
-  backend_stack       = "Node.js"
+  backend_stack       = "Node"
   frontend_stack      = "React"
   open_saas_installed = false
   frontegg_domain     = "imported.frontegg.com"
@@ -489,7 +489,12 @@ resource "frontegg_workspace" "main" {
         config_lines.append('resource "frontegg_workspace" "main" {')
         config_lines.append(f'  name                = "{workspace.get("name", "")}"')
         config_lines.append(f'  country             = "{workspace.get("country", "")}"')
-        config_lines.append(f'  backend_stack       = "{workspace.get("backend_stack", "")}"')
+        
+        # Fix backend_stack values (API returns "Node" but sometimes we see "Node.js")
+        backend = workspace.get("backend_stack", "")
+        if backend == "Node.js":
+            backend = "Node"
+        config_lines.append(f'  backend_stack       = "{backend}"')
         config_lines.append(f'  frontend_stack      = "{workspace.get("frontend_stack", "")}"')
         config_lines.append(f'  open_saas_installed = {str(workspace.get("open_saas_installed", False)).lower()}')
         config_lines.append(f'  frontegg_domain     = "{workspace.get("frontegg_domain", "")}"')
