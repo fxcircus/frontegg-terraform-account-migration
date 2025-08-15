@@ -14,6 +14,13 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
 
 ### ✅ **Fully Migrated** (Working Now)
 
+#### Webhooks & Events
+- **Webhooks** - Event notifications and integrations
+  - Discovers webhooks via region-specific endpoints
+  - Generates Terraform `frontegg_webhook` resources
+  - Preserves display names, URLs, and event triggers
+  - Note: Webhook secrets need manual update for security
+
 #### Security & Authentication Settings
 - **MFA Policies** - Enforcement mode, device remembering, expiration
 - **MFA Authentication App** - Service name configuration  
@@ -48,9 +55,7 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
 - **Frontegg Domain** - Unique per account
 - **Allowed Origins** - Destination's CORS settings preserved
 - **Custom Domains** - Account-specific
-
-### 🚧 **Coming Soon**
-- **Webhooks** - Event notifications (pending API investigation)
+- **Webhook Secrets** - Must be manually set for security
 - **Custom Permissions** - Non-Frontegg permissions (require API/UI creation first)
 
 ## 📋 Prerequisites
@@ -228,7 +233,4 @@ The tool maps source environments to destination by name or type automatically.
 | Roles | ✅ Full | API + Terraform |
 | Permission Categories | ✅ Full | API + Terraform |
 | Permissions (fe.*) | ✅ Full | API + Data Sources |
-| Workspace Name | ❌ Preserved | N/A |
-| Domain | ❌ Preserved | N/A |
-| Custom Permissions | 🚧 Manual | Requires API/UI |
-| Webhooks | 🚧 Coming Soon | API Investigation |
+| Webhooks | ✅ Full | API + Terraform |

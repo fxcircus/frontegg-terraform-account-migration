@@ -41,6 +41,7 @@ def clean_environment():
         'permissions_imported.tf',
         'permission_categories_imported.tf',
         'roles_imported.tf',
+        'webhooks_imported.tf',
         
         # Any other imported terraform files
         *glob.glob('*_imported.tf'),

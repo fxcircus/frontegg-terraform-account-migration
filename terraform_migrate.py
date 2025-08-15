@@ -324,6 +324,35 @@ class TerraformMigrator:
         except Exception as e:
             print(f"    ❌ Error fetching permissions: {e}")
         
+        # Discover webhooks
+        print("  🪝 Fetching webhooks...")
+        try:
+            # Construct webhook URL based on region
+            webhook_base_urls = {
+                "US": "https://frontegg-prod.us.frontegg.com",
+                "EU": "https://frontegg-prod.frontegg.com",
+                "UK": "https://frontegg-prod.uk.frontegg.com",
+                "CA": "https://frontegg-prod.ca.frontegg.com",
+                "AU": "https://frontegg-prod.au.frontegg.com"
+            }
+            webhook_base = webhook_base_urls.get(self.region, "https://frontegg-prod.frontegg.com")
+            webhook_url = f"{webhook_base}/webhook"
+            
+            response = requests.get(webhook_url, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                webhooks = data if isinstance(data, list) else data.get('items', data.get('data', []))
+                if webhooks:
+                    print(f"    ✅ Found {len(webhooks)} webhook(s)")
+                    resources['webhooks'] = webhooks
+                else:
+                    print("    ⚠️  No webhooks found")
+            else:
+                print(f"    ❌ Could not fetch webhooks: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error fetching webhooks: {e}")
+        
         return resources
     
     def create_custom_permissions(self, permissions: List[Dict], environment_id: str = None) -> Dict[str, List[Dict]]:
@@ -718,6 +747,13 @@ frontend_stack  = "{frontend_stack}"
                 with open("permissions_imported.tf", "w") as f:
                     f.write(permissions_config)
                 print(f"  ✅ Generated config for {len(api_resources['permissions'])} permissions")
+            
+            # Generate webhooks configuration
+            if 'webhooks' in api_resources:
+                webhooks_config = self.generate_webhooks_config(api_resources['webhooks'])
+                with open("webhooks_imported.tf", "w") as f:
+                    f.write(webhooks_config)
+                print(f"  ✅ Generated config for {len(api_resources['webhooks'])} webhook(s)")
         
         print("\n✅ Configuration files generated!")
         
@@ -1127,6 +1163,55 @@ frontend_stack  = "{frontend_stack}"
             config_lines.append(f'    redirect_url = "{oidc.get("redirect_url", "")}"')
             config_lines.append('  }')
         config_lines.append('}')
+        
+        return '\n'.join(config_lines)
+    
+    def generate_webhooks_config(self, webhooks: List[Dict]) -> str:
+        """Generate Terraform configuration for webhooks."""
+        if not webhooks:
+            return "# No webhooks found"
+        
+        config_lines = ['# Webhooks']
+        config_lines.append('# Generated from source account')
+        config_lines.append('# Note: Secrets will need to be updated manually\n')
+        
+        for webhook in webhooks:
+            # Create a safe resource name
+            display_name = webhook.get('displayName', 'webhook')
+            webhook_id = webhook.get('_id', '')
+            safe_name = display_name.lower().replace(' ', '_').replace('-', '_').replace('.', '_')
+            
+            # Add webhook ID as comment for reference
+            config_lines.append(f'# Source webhook ID: {webhook_id}')
+            config_lines.append(f'resource "frontegg_webhook" "{safe_name}" {{')
+            config_lines.append(f'  display_name = "{display_name}"')
+            config_lines.append(f'  enabled      = {str(webhook.get("isActive", True)).lower()}')
+            config_lines.append(f'  url          = "{webhook.get("url", "")}"')
+            
+            # Event keys (triggers)
+            event_keys = webhook.get('eventKeys', [])
+            if event_keys:
+                config_lines.append(f'  triggers     = {json.dumps(event_keys)}')
+            
+            # HTTP method (if not default POST)
+            http_method = webhook.get('httpMethod', 'POST')
+            if http_method != 'POST':
+                config_lines.append(f'  # HTTP Method: {http_method}')
+            
+            # Secret - needs manual update
+            if webhook.get('secret'):
+                config_lines.append(f'  # Note: Secret needs to be manually set or use var.webhook_secret_{safe_name}')
+                config_lines.append(f'  # secret = "YOUR_SECRET_HERE"')
+            
+            # Custom payload if exists
+            custom_payload = webhook.get('customPayload', '')
+            if custom_payload:
+                config_lines.append(f'  # Custom payload exists but may need manual configuration')
+                config_lines.append(f'  # custom_payload = <<-EOT')
+                config_lines.append(f'  # {custom_payload}')
+                config_lines.append(f'  # EOT')
+            
+            config_lines.append('}\n')
         
         return '\n'.join(config_lines)
     
