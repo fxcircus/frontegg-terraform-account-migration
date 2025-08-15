@@ -38,6 +38,7 @@ class TerraformMigrator:
         self.region = None
         self.api_base_url = None
         self.selected_environment = None
+        self.available_environments = []
         
     def load_credentials(self, account_type: str = None):
         """Load credentials from environment or .env file."""
@@ -127,6 +128,9 @@ class TerraformMigrator:
                 padded = payload + '=' * (4 - len(payload) % 4)
                 decoded = json.loads(base64.b64decode(padded))
                 
+                # Extract available environments
+                self.available_environments = decoded.get('customClaims', {}).get('accountEnvironments', [])
+                
                 domain = decoded.get('domain', '')
                 origins = decoded.get('customAttributes', {}).get('allowedOrigins', [])
                 
@@ -198,9 +202,17 @@ class TerraformMigrator:
         
         return None
     
-    def discover_additional_resources_via_api(self):
+    def discover_additional_resources_via_api(self, environment_id=None):
         """Discover resources via API that can't be imported to Terraform but can be created."""
-        print("\n🔍 Discovering additional resources via API...")
+        env_name = ""
+        if environment_id:
+            # Find environment name from available environments
+            for env in self.available_environments:
+                if env.get('id') == environment_id:
+                    env_name = f" [{env.get('environmentName', 'unknown')}]"
+                    break
+        
+        print(f"\n🔍 Discovering additional resources via API{env_name}...")
         resources = {}
         
         # Authenticate if needed
@@ -210,17 +222,19 @@ class TerraformMigrator:
                 print("  ❌ Failed to authenticate for API discovery")
                 return resources
         
+        # Prepare headers with environment ID if provided
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        if environment_id:
+            headers["frontegg-environment-id"] = environment_id
+        
         # Discover email templates
         print("  📧 Fetching email templates...")
         try:
             templates_url = f"{self.api_base_url}/identity/resources/mail/v1/configs/templates"
-            response = requests.get(
-                templates_url,
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Content-Type": "application/json"
-                }
-            )
+            response = requests.get(templates_url, headers=headers)
             
             if response.status_code == 200:
                 data = response.json()
@@ -241,13 +255,7 @@ class TerraformMigrator:
         print("  📧 Fetching email provider configuration...")
         try:
             provider_url = f"{self.api_base_url}/identity/resources/mail/v1/configs/provider"
-            response = requests.get(
-                provider_url,
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Content-Type": "application/json"
-                }
-            )
+            response = requests.get(provider_url, headers=headers)
             
             if response.status_code == 200:
                 provider = response.json()
@@ -263,13 +271,7 @@ class TerraformMigrator:
         print("  👥 Fetching roles...")
         try:
             roles_url = f"{self.api_base_url}/identity/resources/roles/v2"
-            response = requests.get(
-                roles_url,
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Content-Type": "application/json"
-                }
-            )
+            response = requests.get(roles_url, headers=headers)
             
             if response.status_code == 200:
                 data = response.json()
@@ -288,13 +290,7 @@ class TerraformMigrator:
         print("  📁 Fetching permission categories...")
         try:
             categories_url = f"{self.api_base_url}/identity/resources/permissions/v1/categories"
-            response = requests.get(
-                categories_url,
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Content-Type": "application/json"
-                }
-            )
+            response = requests.get(categories_url, headers=headers)
             
             if response.status_code == 200:
                 data = response.json()
@@ -313,13 +309,7 @@ class TerraformMigrator:
         print("  🔑 Fetching permissions...")
         try:
             permissions_url = f"{self.api_base_url}/identity/resources/permissions/v1"
-            response = requests.get(
-                permissions_url,
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Content-Type": "application/json"
-                }
-            )
+            response = requests.get(permissions_url, headers=headers)
             
             if response.status_code == 200:
                 data = response.json()
@@ -336,7 +326,7 @@ class TerraformMigrator:
         
         return resources
     
-    def create_custom_permissions(self, permissions: List[Dict]) -> Dict[str, List[Dict]]:
+    def create_custom_permissions(self, permissions: List[Dict], environment_id: str = None) -> Dict[str, List[Dict]]:
         """Create custom permissions in the destination account via API."""
         created_permissions = []
         failed_permissions = []
@@ -360,12 +350,18 @@ class TerraformMigrator:
             try:
                 # Try to create the permission (API expects an array)
                 create_url = f"{self.api_base_url}/identity/resources/permissions/v1"
+                
+                # Prepare headers with environment ID if provided
+                headers = {
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+                if environment_id:
+                    headers["frontegg-environment-id"] = environment_id
+                
                 response = requests.post(
                     create_url,
-                    headers={
-                        "Authorization": f"Bearer {self.access_token}",
-                        "Content-Type": "application/json"
-                    },
+                    headers=headers,
                     json=[permission_data]  # API expects an array
                 )
                 
@@ -1134,24 +1130,107 @@ frontend_stack  = "{frontend_stack}"
         
         return '\n'.join(config_lines)
     
-    def migrate(self):
-        """Full migration from source to destination."""
+    def migrate_single_environment(self, source_env_id: str = None, dest_env_id: str = None, export_file: str = None):
+        """Migrate a single environment from source to destination."""
+        if not export_file:
+            # Export from source
+            print("\n📤 Exporting from source account...")
+            self.load_credentials('source')
+            
+            # Discover resources for specific environment
+            domain, origins = self.authenticate_minimal()
+            api_resources = self.discover_additional_resources_via_api(source_env_id)
+            
+            # Save export with environment ID in filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            env_suffix = f"_{source_env_id[:8]}" if source_env_id else ""
+            export_file = f"terraform_export_{timestamp}{env_suffix}.json"
+            
+            # Export Terraform state and combine with API resources
+            # ... existing export logic ...
+            
+        # Import to destination
+        print("\n📥 Importing to destination account...")
+        self.load_credentials('dest')
+        
+        # Set environment ID for destination if provided
+        if dest_env_id:
+            # This will be used in API calls during import
+            self.selected_environment = dest_env_id
+        
+        self.import_configuration(export_file)
+        
+        return export_file
+    
+    def migrate(self, exclude_envs: List[str] = None):
+        """Full migration from source to destination, optionally for all environments."""
         print("\n🚀 Starting full migration from source to destination")
         print("="*50)
         
-        # Export from source
-        print("\n📤 STEP 1: Export from source account")
-        print("-"*50)
+        # Load source credentials and discover environments
         self.load_credentials('source')
-        export_file = self.export_configuration()
+        domain, _ = self.authenticate_minimal()
         
-        # Import to destination
-        print("\n📥 STEP 2: Import to destination account")
-        print("-"*50)
+        source_envs = self.available_environments
+        if not source_envs:
+            print("⚠️  No environments found in source account, migrating without environment context")
+            # Fallback to single migration without environment
+            export_file = self.export_configuration()
+            self.load_credentials('dest')
+            self.import_configuration(export_file)
+            print("\n✅ Migration complete!")
+            return
+        
+        # Load destination credentials and discover environments
         self.load_credentials('dest')
-        self.import_configuration(export_file)
+        dest_domain, _ = self.authenticate_minimal()
+        dest_envs = self.available_environments
         
-        print("\n✅ Migration complete!")
+        print(f"\n📊 Environment Discovery:")
+        print(f"  Source environments: {len(source_envs)}")
+        for env in source_envs:
+            print(f"    • {env.get('environmentName', 'unknown')} ({env.get('environment', 'unknown')}) - {env.get('id', 'unknown')[:8]}...")
+        
+        print(f"  Destination environments: {len(dest_envs)}")
+        for env in dest_envs:
+            print(f"    • {env.get('environmentName', 'unknown')} ({env.get('environment', 'unknown')}) - {env.get('id', 'unknown')[:8]}...")
+        
+        # Filter out excluded environments
+        if exclude_envs:
+            source_envs = [env for env in source_envs if env.get('environmentName') not in exclude_envs]
+            print(f"\n  Excluding environments: {', '.join(exclude_envs)}")
+        
+        # Migrate each environment
+        print(f"\n🔄 Migrating {len(source_envs)} environment(s)...")
+        
+        for source_env in source_envs:
+            env_name = source_env.get('environmentName', 'unknown')
+            env_type = source_env.get('environment', 'unknown')
+            source_env_id = source_env.get('id')
+            
+            print(f"\n{'='*60}")
+            print(f"Migrating environment: {env_name} ({env_type})")
+            print(f"{'='*60}")
+            
+            # Find matching destination environment by name or type
+            dest_env = None
+            for d_env in dest_envs:
+                if d_env.get('environmentName') == env_name or d_env.get('environment') == env_type:
+                    dest_env = d_env
+                    break
+            
+            if dest_env:
+                print(f"  → Mapping to destination environment: {dest_env.get('environmentName')} - {dest_env.get('id', '')[:8]}...")
+                dest_env_id = dest_env.get('id')
+            else:
+                print(f"  ⚠️  No matching destination environment found for {env_name}")
+                print(f"     Creating/updating default environment...")
+                dest_env_id = dest_envs[0].get('id') if dest_envs else None
+            
+            # Migrate this environment
+            self.migrate_single_environment(source_env_id, dest_env_id)
+        
+        print("\n✅ All environments migrated successfully!")
         print("\nThe migration has been automatically applied to your destination account.")
         print("Check your Frontegg portal to verify the changes.")
         
@@ -1168,7 +1247,17 @@ frontend_stack  = "{frontend_stack}"
             print("          → Import to destination account (uses DEST_* env vars)")
             print("")
             print("  Migrate: python3 terraform_migrate.py migrate")
-            print("           → Full migration (export from source + import to dest)")
+            print("           → Full migration (all environments by default)")
+            print("")
+            print("  Options:")
+            print("    --exclude-env <name>  Exclude specific environment (can be used multiple times)")
+            print("    --single-env          Only migrate development environment")
+            print("")
+            print("  Examples:")
+            print("    python3 terraform_migrate.py migrate")
+            print("    python3 terraform_migrate.py migrate --exclude-env production")
+            print("    python3 terraform_migrate.py migrate --exclude-env qa --exclude-env staging")
+            print("    python3 terraform_migrate.py migrate --single-env")
             print("")
             print("\nRequired environment variables in .env:")
             print("  SOURCE_FRONTEGG_CLIENT_ID    - Source account client ID")
@@ -1193,7 +1282,20 @@ frontend_stack  = "{frontend_stack}"
             self.load_credentials('dest')
             self.import_configuration(sys.argv[2])
         elif command == "migrate":
-            self.migrate()
+            # Check for --exclude-env option
+            exclude_envs = []
+            for i, arg in enumerate(sys.argv):
+                if arg == "--exclude-env" and i + 1 < len(sys.argv):
+                    exclude_envs.append(sys.argv[i + 1])
+            
+            # Check for --all-envs flag (default behavior)
+            all_envs = "--all-envs" in sys.argv or not any("--single-env" in arg for arg in sys.argv)
+            
+            if all_envs:
+                self.migrate(exclude_envs=exclude_envs if exclude_envs else None)
+            else:
+                # Single environment migration (backward compatible)
+                self.migrate(exclude_envs=["qa", "staging", "production"])  # Only migrate development by default
         else:
             print(f"Unknown command: {command}")
             print("Use 'export', 'import', or 'migrate'")

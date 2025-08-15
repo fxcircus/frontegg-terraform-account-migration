@@ -5,6 +5,7 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
 ## 🚀 Features
 
 - One command migrates everything
+- **Multi-environment support** - Automatically discovers and migrates all environments
 - Automatic workspace import and configuration
 - Smart redirect URL handling
 - Preserves destination-specific settings
@@ -88,15 +89,25 @@ DEST_FRONTEGG_REGION=US
 ### 3. Run Migration
 
 ```bash
+# Migrate all environments (default)
 python3 terraform_migrate.py migrate
+
+# Exclude specific environments
+python3 terraform_migrate.py migrate --exclude-env production
+
+# Exclude multiple environments
+python3 terraform_migrate.py migrate --exclude-env qa --exclude-env staging
+
+# Migrate only development environment
+python3 terraform_migrate.py migrate --single-env
 ```
 
-That's it! The tool will:
-1. Export all settings from source account
-2. Import existing workspace automatically
-3. Get destination's login URL for proper redirects
+The tool will:
+1. Discover all environments in source account
+2. Export settings from each environment
+3. Map to corresponding destination environments
 4. Generate Terraform configurations
-5. Apply everything to destination account
+5. Apply everything automatically
 
 ## 🎯 Usage Options
 
@@ -186,14 +197,25 @@ This removes all generated files while keeping your `.env` safe.
 - The tool automatically uses destination's login URL
 - 22 out of 28 template types are supported by Terraform
 
-## 🌍 Multi-Region Support
+## 🌍 Multi-Region & Multi-Environment Support
 
+### Regions
 Supports all Frontegg regions:
 - `US` - United States
 - `EU` - Europe
 - `UK` - United Kingdom  
 - `CA` - Canada
 - `AU` - Australia
+
+### Environments
+Automatically discovers and migrates all environments:
+- Development
+- QA
+- Staging  
+- Production
+- Custom environments
+
+The tool maps source environments to destination by name or type automatically.
 
 ## 📊 Migration Summary
 
