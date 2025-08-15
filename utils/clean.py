@@ -26,11 +26,24 @@ def clean_environment():
         'terraform.tfstate.backup',
         '.terraform.lock.hcl',
         
+        # Terraform plan files
+        'tfplan',
+        
         # Generated workspace configurations
         'workspace.tf',
+        'workspace.tf.backup',
         'workspace_imported.tf',
         'workspace_migrated.tf',
         'workspace_temp.tf',
+        
+        # Generated resource configurations
+        'email_templates_imported.tf',
+        'permissions_imported.tf',
+        'permission_categories_imported.tf',
+        'roles_imported.tf',
+        
+        # Any other imported terraform files
+        *glob.glob('*_imported.tf'),
         
         # Export files (contain account data)
         *glob.glob('terraform_export_*.json'),
@@ -132,8 +145,10 @@ def main():
     print("\nThis will remove:")
     print("  • terraform.tfvars (auto-generated)")
     print("  • Terraform state files")
+    print("  • Terraform plan files (tfplan)")
     print("  • Generated workspace configurations")
-    print("  • Export files")
+    print("  • Generated resource files (*_imported.tf)")
+    print("  • Export files (*.json)")
     print("  • Terraform cache (.terraform/)")
     print("\nThis will keep:")
     print("  • .env (already in .gitignore)")
