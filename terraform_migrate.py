@@ -1130,7 +1130,6 @@ frontend_stack  = "{frontend_stack}"
             config_lines.append('  oidc {')
             config_lines.append(f'    redirect_url = "{oidc.get("redirect_url", "")}"')
             config_lines.append('  }')
-        
         config_lines.append('}')
         
         return '\n'.join(config_lines)

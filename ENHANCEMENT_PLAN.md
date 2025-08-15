@@ -64,9 +64,9 @@ Based on the Frontegg Terraform provider documentation, these resources can be m
   - API needed: GET `/identity/resources/sso/v1/oidc/configurations`
 
 ### 6. 🎨 Admin Portal & Branding
-- `frontegg_admin_portal` - Admin portal customization
-  - Import: `terraform import frontegg_admin_portal.main singleton`
-  - Contains: Theme, colors, logo, etc.
+- Note: Admin portal settings are part of the workspace resource
+  - No separate data source available for reading admin_portal
+  - Settings must be configured directly in workspace resource
 
 ### 7. 📱 Applications
 - `frontegg_application` - Application configurations
@@ -147,7 +147,6 @@ Resources to add:
 1. Social login providers (Google, GitHub, etc.)
 2. SAML configurations
 3. OIDC configurations
-4. Admin portal customization
 ```
 
 ### Phase 3: Complete Migration
