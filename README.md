@@ -30,6 +30,17 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
   - Automatically fixes redirect URLs using destination's domain
   - Includes: ResetPassword, ActivateUser, MagicLink, MFA templates, etc.
 
+#### Authorization & Access Control
+- **Roles** - Custom and default roles with permissions
+  - Creates new roles in destination (new UUIDs generated)
+  - Maps permissions automatically (built-in fe.* permissions only)
+  - Preserves role keys, names, descriptions, and settings
+- **Permission Categories** - Permission groupings and organization
+  - All 21 categories migrated successfully
+- **Permissions** - References to built-in Frontegg permissions
+  - Built-in permissions (fe.*) are referenced correctly
+  - Custom permissions must be created manually first
+
 ### ❌ **NOT Migrated** (Destination Keeps Its Own)
 - **Workspace Name** - Each account maintains its own
 - **Country Setting** - Preserved per account
@@ -39,10 +50,8 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
 - **Custom Domains** - Account-specific
 
 ### 🚧 **Coming Soon**
-- **Roles** - Custom roles and configurations
-- **Permissions** - Granular permissions
-- **Permission Categories** - Permission groupings
 - **Webhooks** - Event notifications (pending API investigation)
+- **Custom Permissions** - Non-Frontegg permissions (require API/UI creation first)
 
 ## 📋 Prerequisites
 
@@ -142,7 +151,8 @@ python3 terraform_migrate.py import terraform_export_TIMESTAMP.json
 ```
 .
 ├── terraform_migrate.py      # Main migration tool
-├── clean.py                  # Environment cleanup utility
+├── utils/
+│   └── clean.py             # Environment cleanup utility
 ├── .env                      # Your credentials (gitignored)
 ├── .env.example              # Template for credentials
 ├── .gitignore                # Protects sensitive files
@@ -155,7 +165,7 @@ python3 terraform_migrate.py import terraform_export_TIMESTAMP.json
 
 To reset your environment:
 ```bash
-python3 clean.py -y
+python3 utils/clean.py -y
 ```
 
 This removes all generated files while keeping your `.env` safe.
@@ -201,10 +211,13 @@ Supports all Frontegg regions:
 | Password Policies | ✅ Full | Terraform |
 | Email Templates | ✅ Full | API + Terraform |
 | SAML/OIDC | ✅ Full | Terraform |
+| Roles | ✅ Full | API + Terraform |
+| Permission Categories | ✅ Full | API + Terraform |
+| Permissions (fe.*) | ✅ Full | API + Data Sources |
 | Workspace Name | ❌ Preserved | N/A |
 | Domain | ❌ Preserved | N/A |
-| Roles | 🚧 Coming Soon | API + Terraform |
-| Permissions | 🚧 Coming Soon | API + Terraform |
+| Custom Permissions | 🚧 Manual | Requires API/UI |
+| Webhooks | 🚧 Coming Soon | API Investigation |
 
 ## 🤝 Contributing
 

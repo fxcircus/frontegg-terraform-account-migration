@@ -259,6 +259,81 @@ class TerraformMigrator:
         except Exception as e:
             print(f"    ❌ Error fetching provider: {e}")
         
+        # Discover roles
+        print("  👥 Fetching roles...")
+        try:
+            roles_url = f"{self.api_base_url}/identity/resources/roles/v2"
+            response = requests.get(
+                roles_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                roles = data if isinstance(data, list) else data.get('items', data.get('data', []))
+                if roles:
+                    print(f"    ✅ Found {len(roles)} roles")
+                    resources['roles'] = roles
+                else:
+                    print("    ⚠️  No roles found")
+            else:
+                print(f"    ❌ Could not fetch roles: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error fetching roles: {e}")
+        
+        # Discover permission categories
+        print("  📁 Fetching permission categories...")
+        try:
+            categories_url = f"{self.api_base_url}/identity/resources/permissions/v1/categories"
+            response = requests.get(
+                categories_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                categories = data if isinstance(data, list) else data.get('items', data.get('data', []))
+                if categories:
+                    print(f"    ✅ Found {len(categories)} permission categories")
+                    resources['permission_categories'] = categories
+                else:
+                    print("    ⚠️  No permission categories found")
+            else:
+                print(f"    ❌ Could not fetch categories: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error fetching categories: {e}")
+        
+        # Discover permissions
+        print("  🔑 Fetching permissions...")
+        try:
+            permissions_url = f"{self.api_base_url}/identity/resources/permissions/v1"
+            response = requests.get(
+                permissions_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                permissions = data if isinstance(data, list) else data.get('items', data.get('data', []))
+                if permissions:
+                    print(f"    ✅ Found {len(permissions)} permissions")
+                    resources['permissions'] = permissions
+                else:
+                    print("    ⚠️  No permissions found")
+            else:
+                print(f"    ❌ Could not fetch permissions: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error fetching permissions: {e}")
+        
         return resources
             
     def export_configuration(self):
@@ -529,6 +604,33 @@ frontend_stack  = "{frontend_stack}"
                 with open("email_provider_imported.tf", "w") as f:
                     f.write(provider_config)
                 print(f"  ✅ Generated config for email provider")
+            
+            # Generate roles configuration (must be first)
+            if 'roles' in api_resources:
+                roles_config = self.generate_roles_config(
+                    api_resources['roles'],
+                    api_resources.get('permissions', [])
+                )
+                with open("roles_imported.tf", "w") as f:
+                    f.write(roles_config)
+                print(f"  ✅ Generated config for {len(api_resources['roles'])} roles")
+            
+            # Generate permission categories configuration (must be before permissions)
+            if 'permission_categories' in api_resources:
+                categories_config = self.generate_permission_categories_config(api_resources['permission_categories'])
+                with open("permission_categories_imported.tf", "w") as f:
+                    f.write(categories_config)
+                print(f"  ✅ Generated config for {len(api_resources['permission_categories'])} permission categories")
+            
+            # Generate permissions configuration (must be after categories)
+            if 'permissions' in api_resources:
+                permissions_config = self.generate_permissions_config(
+                    api_resources['permissions'],
+                    api_resources.get('roles', [])
+                )
+                with open("permissions_imported.tf", "w") as f:
+                    f.write(permissions_config)
+                print(f"  ✅ Generated config for {len(api_resources['permissions'])} permissions")
         
         print("\n✅ Configuration files generated!")
         
@@ -686,6 +788,146 @@ frontend_stack  = "{frontend_stack}"
             config_lines.append(f'  # Provider type: {provider.get("type")}')
         
         config_lines.append('}')
+        
+        return '\n'.join(config_lines)
+    
+    def generate_roles_config(self, roles: List[Dict], permissions: List[Dict] = None) -> str:
+        """Generate Terraform configuration for roles."""
+        config_lines = ['# Roles']
+        config_lines.append('# Generated from source account')
+        config_lines.append('# Note: Custom permissions (non fe.*) are excluded from permission_ids\n')
+        
+        # Create mapping of permission ID to key for source permissions
+        perm_id_to_key = {}
+        if permissions:
+            for perm in permissions:
+                if perm.get('id') and perm.get('key'):
+                    perm_id_to_key[perm['id']] = perm['key']
+        
+        for role in roles:
+            # Skip default Admin role as it always exists
+            if role.get('key') == 'Admin' or role.get('name') == 'Admin':
+                continue
+                
+            role_name = role.get('name', '')
+            role_key = role.get('key', role_name.lower().replace(' ', '_'))
+            safe_name = role_key.lower().replace(' ', '_').replace('-', '_')
+            
+            config_lines.append(f'resource "frontegg_role" "{safe_name}" {{')
+            config_lines.append(f'  name        = "{self.escape_terraform_string(role_name)}"')
+            config_lines.append(f'  key         = "{role_key}"')
+            
+            # Description is required, use name if no description
+            description = role.get('description', '') or f'{role_name} role'
+            config_lines.append(f'  description = "{self.escape_terraform_string(description)}"')
+            
+            # Check if this is a default role
+            is_default = role.get('isDefault', False)
+            config_lines.append(f'  default  = {str(is_default).lower()}')
+            
+            # Level is required, default to 0 (tenant level)
+            level = role.get('level', 0)
+            config_lines.append(f'  level = {level}')
+            
+            # Map permission IDs to keys and filter out custom permissions
+            if role.get('permissions') and len(role['permissions']) > 0:
+                # Convert permission IDs to keys
+                perm_keys = []
+                for perm_id in role['permissions']:
+                    perm_key = perm_id_to_key.get(perm_id)
+                    # Only include built-in Frontegg permissions (fe.*)
+                    if perm_key and perm_key.startswith('fe.'):
+                        # Create reference to the data source
+                        safe_perm_name = perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')
+                        perm_keys.append(f'data.frontegg_permission.{safe_perm_name}.id')
+                
+                if perm_keys:
+                    config_lines.append('  permission_ids = [')
+                    for perm_ref in perm_keys:
+                        config_lines.append(f'    {perm_ref},')
+                    config_lines.append('  ]')
+                else:
+                    config_lines.append('  permission_ids = []')
+            else:
+                config_lines.append('  permission_ids = []')
+            
+            config_lines.append('}\n')
+        
+        return '\n'.join(config_lines)
+    
+    def generate_permission_categories_config(self, categories: List[Dict]) -> str:
+        """Generate Terraform configuration for permission categories."""
+        config_lines = ['# Permission Categories']
+        config_lines.append('# Generated from source account\n')
+        
+        for category in categories:
+            cat_name = category.get('name', '')
+            cat_key = category.get('key', cat_name.lower().replace(' ', '_'))
+            safe_name = cat_key.lower().replace(' ', '_').replace('-', '_').replace('.', '_')
+            
+            config_lines.append(f'resource "frontegg_permission_category" "{safe_name}" {{')
+            config_lines.append(f'  name = "{self.escape_terraform_string(cat_name)}"')
+            # Note: key field doesn't exist in Terraform provider, it's auto-generated
+            
+            if category.get('description'):
+                config_lines.append(f'  description = "{self.escape_terraform_string(category.get("description"))}"')
+            
+            config_lines.append('}\n')
+        
+        return '\n'.join(config_lines)
+    
+    def generate_permissions_config(self, permissions: List[Dict], roles: List[Dict]) -> str:
+        """Generate Terraform configuration for permissions."""
+        config_lines = ['# Permissions']
+        config_lines.append('# Generated from source account')
+        config_lines.append('# Note: Only built-in Frontegg permissions (fe.*) are included')
+        config_lines.append('# Custom permissions must be created via API/UI first\n')
+        
+        # Separate custom and built-in permissions
+        builtin_permissions = []
+        custom_permissions = []
+        
+        for perm in permissions:
+            perm_key = perm.get('key', '')
+            if not perm_key:
+                continue
+            if perm_key.startswith('fe.'):
+                builtin_permissions.append(perm)
+            else:
+                custom_permissions.append(perm)
+        
+        # Log custom permissions that need manual creation
+        if custom_permissions:
+            config_lines.append('# CUSTOM PERMISSIONS FOUND (create these manually):')
+            for perm in custom_permissions:
+                config_lines.append(f'#   - {perm.get("key")}: {perm.get("name", "No name")}')
+            config_lines.append('')
+        
+        # Create a mapping of permission keys to role assignments
+        perm_to_roles = {}
+        for role in roles:
+            if role.get('permissions'):
+                for perm in role['permissions']:
+                    if perm not in perm_to_roles:
+                        perm_to_roles[perm] = []
+                    perm_to_roles[perm].append(role.get('key', role.get('name')))
+        
+        # Generate data sources only for built-in permissions
+        for perm in builtin_permissions:
+            perm_key = perm.get('key', '')
+            safe_name = perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')
+            
+            config_lines.append(f'# Permission: {perm_key}')
+            if perm.get('name'):
+                config_lines.append(f'# Name: {perm.get("name")}')
+            if perm.get('description'):
+                config_lines.append(f'# Description: {perm.get("description")}')
+            if perm_key in perm_to_roles:
+                config_lines.append(f'# Assigned to roles: {", ".join(perm_to_roles[perm_key])}')
+            
+            config_lines.append(f'data "frontegg_permission" "{safe_name}" {{')
+            config_lines.append(f'  key = "{perm_key}"')
+            config_lines.append('}\n')
         
         return '\n'.join(config_lines)
     
