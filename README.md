@@ -16,10 +16,11 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
 
 #### Webhooks & Events
 - **Webhooks** - Event notifications and integrations
-  - Discovers webhooks via region-specific endpoints
-  - Generates Terraform `frontegg_webhook` resources
-  - Preserves display names, URLs, and event triggers
-  - Note: Webhook secrets need manual update for security
+  - ✅ Discovers webhooks from source account
+  - ✅ Exports webhook configuration
+  - ✅ Generates Terraform configuration
+  - ⚠️ **Manual Recreation Required**: Due to API limitations, webhooks must be manually recreated in the destination account using the exported configuration as reference
+  - Note: The Terraform provider and API don't support webhook creation (404 errors)
 
 #### Security & Authentication Settings
 - **MFA Policies** - Enforcement mode, device remembering, expiration
@@ -233,4 +234,4 @@ The tool maps source environments to destination by name or type automatically.
 | Roles | ✅ Full | API + Terraform |
 | Permission Categories | ✅ Full | API + Terraform |
 | Permissions (fe.*) | ✅ Full | API + Data Sources |
-| Webhooks | ✅ Full | API + Terraform |
+| Webhooks | ⚠️ Export Only | Discovery works, manual creation required |

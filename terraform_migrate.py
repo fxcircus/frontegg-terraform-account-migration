@@ -1177,9 +1177,11 @@ frontend_stack  = "{frontend_stack}"
         if not webhooks:
             return "# No webhooks found"
         
-        config_lines = ['# Webhooks']
+        config_lines = ['# Webhooks Configuration Reference']
         config_lines.append('# Generated from source account')
-        config_lines.append('# Note: Secrets will need to be updated manually\n')
+        config_lines.append('# ⚠️  IMPORTANT: Webhooks cannot be created via Terraform/API (404 error)')
+        config_lines.append('#              Please manually recreate these webhooks in the Frontegg portal')
+        config_lines.append('#              using the configuration below as reference\n')
         
         for webhook in webhooks:
             # Create a safe resource name
@@ -1189,34 +1191,47 @@ frontend_stack  = "{frontend_stack}"
             
             # Add webhook ID as comment for reference
             config_lines.append(f'# Source webhook ID: {webhook_id}')
-            config_lines.append(f'resource "frontegg_webhook" "{safe_name}" {{')
-            config_lines.append(f'  description = "{display_name}"')  # Terraform uses 'description' not 'display_name'
-            config_lines.append(f'  enabled     = {str(webhook.get("isActive", True)).lower()}')
-            config_lines.append(f'  url         = "{webhook.get("url", "")}"')
+            config_lines.append(f'# Webhook Name: {display_name}')
+            config_lines.append(f'# ')
+            config_lines.append(f'# COMMENTED OUT - Manual creation required in Frontegg portal')
+            config_lines.append(f'# resource "frontegg_webhook" "{safe_name}" {{')
+            config_lines.append(f'#   description = "{display_name}"')
+            config_lines.append(f'#   enabled     = {str(webhook.get("isActive", True)).lower()}')
+            config_lines.append(f'#   url         = "{webhook.get("url", "")}"')
             
             # Event keys (events in Terraform provider)
             event_keys = webhook.get('eventKeys', [])
             if event_keys:
-                config_lines.append(f'  events = {json.dumps(event_keys)}')
+                config_lines.append(f'#   events = {json.dumps(event_keys)}')
             
             # HTTP method (if not default POST)
             http_method = webhook.get('httpMethod', 'POST')
             if http_method != 'POST':
-                config_lines.append(f'  # HTTP Method: {http_method}')
+                config_lines.append(f'#   # HTTP Method: {http_method}')
             
             # Secret - required field, use placeholder
-            # Note: We can't copy the actual secret for security reasons
-            config_lines.append(f'  secret = "CHANGE_ME_{safe_name.upper()}_SECRET"  # TODO: Update with actual secret')
+            config_lines.append(f'#   secret = "YOUR_SECRET_HERE"')
             
             # Custom payload if exists
             custom_payload = webhook.get('customPayload', '')
             if custom_payload:
-                config_lines.append(f'  # Custom payload exists but may need manual configuration')
-                config_lines.append(f'  # custom_payload = <<-EOT')
-                config_lines.append(f'  # {custom_payload}')
-                config_lines.append(f'  # EOT')
+                config_lines.append(f'#   # Custom payload exists:')
+                config_lines.append(f'#   # custom_payload = <<-EOT')
+                config_lines.append(f'#   # {custom_payload}')
+                config_lines.append(f'#   # EOT')
             
-            config_lines.append('}\n')
+            config_lines.append('# }\n')
+            
+            # Add manual creation instructions
+            config_lines.append(f'# To recreate this webhook manually:')
+            config_lines.append(f'# 1. Go to Frontegg Portal > Environments > Webhooks')
+            config_lines.append(f'# 2. Click "Add Webhook"')
+            config_lines.append(f'# 3. Set Name: {display_name}')
+            config_lines.append(f'# 4. Set URL: {webhook.get("url", "")}')
+            config_lines.append(f'# 5. Set Events: {", ".join(event_keys) if event_keys else "None"}')
+            config_lines.append(f'# 6. Set Secret: (generate a new secure secret)')
+            config_lines.append(f'# 7. Enable: {webhook.get("isActive", True)}')
+            config_lines.append('')
         
         return '\n'.join(config_lines)
     
