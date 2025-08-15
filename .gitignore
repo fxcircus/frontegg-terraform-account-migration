@@ -1,0 +1,51 @@
+# Credentials and sensitive data
+.env
+terraform.tfvars
+
+# Terraform state files (contain sensitive data)
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Terraform directories
+.terraform/
+.terraform.tfstate.lock.info
+
+# Generated workspace configurations (account-specific)
+workspace.tf
+workspace_*.tf
+
+# Export files (contain account data)
+terraform_export_*.json
+frontegg_export_*.json
+terraform_export_*/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+EOF < /dev/null
