@@ -1,6 +1,7 @@
 # Credentials and sensitive data
 .env
 terraform.tfvars
+CLAUDE.md
 
 # Terraform state files (contain sensitive data)
 *.tfstate

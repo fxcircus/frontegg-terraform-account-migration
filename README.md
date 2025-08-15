@@ -4,11 +4,10 @@ A powerful tool to migrate Frontegg configurations between accounts using Terraf
 
 ## 🚀 Features
 
-- **Fully Automated Migration**: One command migrates everything
-- **Hybrid Approach**: Uses Terraform where possible, API for discovery
-- **Smart Redirect URLs**: Automatically uses destination account's login URL
-- **Zero Manual Setup**: Automatically imports workspaces and configures everything
-- **Preserves Customizations**: Keeps all your custom settings and modifications
+- One command migrates everything
+- Automatic workspace import and configuration
+- Smart redirect URL handling
+- Preserves destination-specific settings
 
 ## ✨ What Gets Migrated
 
@@ -170,13 +169,6 @@ python3 utils/clean.py -y
 
 This removes all generated files while keeping your `.env` safe.
 
-## 🔒 Security
-
-- Never commit `.env` or `terraform.tfvars`
-- Keep `terraform.tfstate` files secure
-- Review configurations before applying
-- Use `.gitignore` to prevent accidents
-
 ## 🐛 Troubleshooting
 
 ### Authentication Errors
@@ -218,19 +210,3 @@ Supports all Frontegg regions:
 | Domain | ❌ Preserved | N/A |
 | Custom Permissions | 🚧 Manual | Requires API/UI |
 | Webhooks | 🚧 Coming Soon | API Investigation |
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Test your changes
-4. Submit a pull request
-
-## 📝 License
-
-[Your License Here]
-
-## 🙏 Acknowledgments
-
-Built with Frontegg's Terraform Provider and API
