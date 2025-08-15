@@ -50,8 +50,9 @@ Creates `terraform_export_[timestamp].json` with ALL settings from Terraform sta
 
 ## 📊 What Gets Migrated
 
-### ✅ Workspace Settings (via Terraform)
-All workspace-level configurations are exported and can be migrated:
+### ✅ Successfully Migrated (via Terraform State)
+
+The tool successfully exports and can migrate all **workspace-level** configurations:
 
 **Core Settings:**
 - Workspace name, country, backend/frontend stacks
@@ -75,33 +76,43 @@ All workspace-level configurations are exported and can be migrated:
 
 ### ❌ What Does NOT Get Migrated
 
-The following are NOT included in the workspace export and must be configured separately:
+Due to Terraform provider limitations, the following resources **cannot be imported** even though they exist:
 
-**User Data:**
-- Users and their passwords
-- User sessions and tokens
-- User-specific settings
+**Email Configuration (Provider doesn't support import):**
+- Email templates (28 types including ResetPassword, ActivateUser, etc.)
+- Email provider settings (SMTP, SendGrid, etc.)
+- *Note: These can be discovered via API but Terraform cannot import them*
 
-**Tenant Data:**
-- Tenant configurations
-- Tenant-specific customizations
-- Tenant API tokens
+**Identity & Access (Limited API/import support):**
+- Roles and role assignments
+- Permissions and permission categories
+- User groups
 
-**Application-Level Settings:**
-- Email templates
+**Application Settings:**
+- Applications and redirect URIs
 - Webhooks and prehooks
-- Roles and permissions
 - API secrets and keys
 - Social login configurations (Google, GitHub, etc.)
+
+**User & Tenant Data (Not workspace-level):**
+- Users and their passwords
+- User sessions and tokens
+- Tenant configurations
+- Tenant-specific customizations
+
+**Integrations:**
+- External user sources (Auth0, Cognito, Firebase)
+- Third-party integrations
 - Custom branding and themes
 
-**Integration Settings:**
-- Third-party integrations
-- External user sources (Auth0, Cognito, Firebase)
-- Webhook secrets
-- OAuth client secrets
+### 📝 Technical Limitations
 
-**Note:** These items require separate API-based migration tools or manual configuration in the target account.
+The Frontegg Terraform provider has limited import capabilities:
+- ✅ **Workspace** - Full import support (`terraform import frontegg_workspace.main singleton`)
+- ❌ **Most other resources** - No import support, can only be created new
+- 📍 This is a provider limitation, not an API limitation
+
+For complete migration including all resources, you would need to use the API directly or manually recreate these resources in the target account.
 
 ## 🔄 Migration to Another Account
 

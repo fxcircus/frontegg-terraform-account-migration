@@ -158,6 +158,256 @@ class TerraformMigrator:
             pass
         return None
         
+    def discover_roles_permissions(self):
+        """Discover and import roles and permissions."""
+        print("\n👥 Discovering roles and permissions...")
+        
+        if not self.access_token:
+            if not self.authenticate_minimal():
+                print("  ⚠️  Could not authenticate for roles discovery")
+                return
+        
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        if self.selected_environment:
+            headers["frontegg-environment-id"] = self.selected_environment['id']
+        
+        imported_count = 0
+        
+        # 1. Discover and import roles
+        print("  → Discovering roles...")
+        roles_url = f"{self.api_base_url}/identity/resources/roles/v2"
+        
+        try:
+            response = requests.get(roles_url, headers=headers)
+            if response.status_code == 200:
+                roles = response.json()
+                if isinstance(roles, list):
+                    print(f"    Found {len(roles)} roles")
+                    
+                    for role in roles:
+                        role_id = role.get('id', '')
+                        role_key = role.get('key', '')
+                        role_name = role.get('name', '')
+                        
+                        if role_id and role_key:
+                            # Import each role
+                            safe_name = role_key.lower().replace(' ', '_').replace('-', '_')
+                            resource_name = f"frontegg_role.{safe_name}"
+                            print(f"    → Importing role: {role_name} ({role_key})")
+                            
+                            # Create minimal config for the role
+                            role_config = f'''
+resource "frontegg_role" "{safe_name}" {{
+  key         = "{role_key}"
+  name        = "{role_name}"
+  description = "{role.get('description', '')}"
+}}
+'''
+                            temp_file = f"role_{safe_name}.tf"
+                            with open(temp_file, "w") as f:
+                                f.write(role_config)
+                            
+                            success, output = self.run_command([
+                                "terraform", "import",
+                                resource_name,
+                                role_id
+                            ])
+                            
+                            # Clean up temporary file
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                            
+                            if success or "Import successful" in output or "Already exists in the state" in output:
+                                print(f"      ✅ Imported: {role_name}")
+                                imported_count += 1
+                            else:
+                                print(f"      ⚠️  Could not import: {role_name}")
+                else:
+                    print("    ⚠️  No roles found")
+            else:
+                print(f"    ⚠️  Could not fetch roles: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error discovering roles: {e}")
+        
+        # 2. Discover and import permissions
+        print("  → Discovering permissions...")
+        permissions_url = f"{self.api_base_url}/identity/resources/permissions/v2"
+        
+        try:
+            response = requests.get(permissions_url, headers=headers)
+            if response.status_code == 200:
+                permissions = response.json()
+                if isinstance(permissions, list):
+                    print(f"    Found {len(permissions)} permissions")
+                    
+                    for permission in permissions:
+                        perm_id = permission.get('id', '')
+                        perm_key = permission.get('key', '')
+                        perm_name = permission.get('name', '')
+                        
+                        if perm_id and perm_key:
+                            # Import each permission
+                            safe_name = perm_key.lower().replace(' ', '_').replace('-', '_').replace('.', '_')
+                            resource_name = f"frontegg_permission.{safe_name}"
+                            print(f"    → Importing permission: {perm_name} ({perm_key})")
+                            
+                            # Create minimal config for the permission
+                            perm_config = f'''
+resource "frontegg_permission" "{safe_name}" {{
+  key         = "{perm_key}"
+  name        = "{perm_name}"
+  description = "{permission.get('description', '')}"
+}}
+'''
+                            temp_file = f"permission_{safe_name}.tf"
+                            with open(temp_file, "w") as f:
+                                f.write(perm_config)
+                            
+                            success, output = self.run_command([
+                                "terraform", "import",
+                                resource_name,
+                                perm_id
+                            ])
+                            
+                            # Clean up temporary file
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                            
+                            if success or "Import successful" in output or "Already exists in the state" in output:
+                                print(f"      ✅ Imported: {perm_name}")
+                                imported_count += 1
+                            else:
+                                print(f"      ⚠️  Could not import: {perm_name}")
+                else:
+                    print("    ⚠️  No permissions found")
+            else:
+                print(f"    ⚠️  Could not fetch permissions: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error discovering permissions: {e}")
+        
+        print(f"  📊 Imported {imported_count} roles and permissions")
+        return imported_count > 0
+    
+    def discover_email_resources(self):
+        """Discover and import email templates and provider."""
+        print("\n📧 Discovering email resources...")
+        
+        if not self.access_token:
+            if not self.authenticate_minimal():
+                print("  ⚠️  Could not authenticate for email discovery")
+                return
+        
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        if self.selected_environment:
+            headers["frontegg-environment-id"] = self.selected_environment['id']
+        
+        imported_count = 0
+        
+        # 1. Import email provider (singleton)
+        print("  → Importing email provider...")
+        
+        # Create minimal config for email provider
+        provider_config = '''
+resource "frontegg_email_provider" "main" {
+  from_email = "noreply@example.com"
+  from_name  = "My App"
+}
+'''
+        with open("email_provider.tf", "w") as f:
+            f.write(provider_config)
+        
+        success, output = self.run_command([
+            "terraform", "import",
+            "frontegg_email_provider.main",
+            "singleton"
+        ])
+        
+        # Clean up
+        if os.path.exists("email_provider.tf"):
+            os.remove("email_provider.tf")
+        if success or "Import successful" in output or "Already exists in the state" in output:
+            print("    ✅ Email provider imported")
+            imported_count += 1
+        else:
+            print(f"    ⚠️  Could not import email provider")
+        
+        # 2. Discover and import email templates
+        print("  → Discovering email templates...")
+        templates_url = f"{self.api_base_url}/identity/resources/mail/v1/configs/templates"
+        
+        try:
+            response = requests.get(templates_url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                # The response might be wrapped in a data field or be a list directly
+                templates = data if isinstance(data, list) else data.get('items', data.get('data', []))
+                
+                if templates and isinstance(templates, list):
+                    print(f"    Found {len(templates)} email templates")
+                    
+                    for template in templates:
+                        # Debug: see what fields are available
+                        template_type = template.get('templateType', template.get('type', ''))
+                        if not template_type and isinstance(template, dict):
+                            # Try to find any identifier
+                            template_type = template.get('id', template.get('name', ''))
+                            
+                        if template_type:
+                            # Import each template
+                            resource_name = f"frontegg_email_template.{template_type.lower().replace(' ', '_').replace('-', '_')}"
+                            print(f"    → Importing template: {template_type}")
+                            
+                            # First create a minimal config for the template
+                            safe_name = template_type.lower().replace(' ', '_').replace('-', '_')
+                            template_config = f'''
+resource "frontegg_email_template" "{safe_name}" {{
+  template_type = "{template_type}"
+  from_address  = "noreply@example.com"
+  from_name     = "My App"
+  subject       = "Email"
+  html_template = "<html></html>"
+  redirect_url  = ""
+  active        = true
+}}
+'''
+                            # Write to a temporary file
+                            temp_file = f"email_template_{safe_name}.tf"
+                            with open(temp_file, "w") as f:
+                                f.write(template_config)
+                            
+                            success, output = self.run_command([
+                                "terraform", "import",
+                                resource_name,
+                                template_type
+                            ])
+                            
+                            # Clean up temporary file
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                            
+                            if success or "Import successful" in output or "Already exists in the state" in output:
+                                print(f"      ✅ Imported: {template_type}")
+                                imported_count += 1
+                            else:
+                                print(f"      ⚠️  Could not import: {template_type}")
+                else:
+                    print("    ⚠️  No templates found")
+            else:
+                print(f"    ⚠️  Could not fetch templates: {response.status_code}")
+        except Exception as e:
+            print(f"    ❌ Error discovering templates: {e}")
+        
+        print(f"  📊 Imported {imported_count} email resources")
+        return imported_count > 0
+    
     def setup_workspace(self):
         """Initial setup - import existing workspace to Terraform."""
         print("\n🚀 Setting up Terraform with existing workspace")
@@ -275,6 +525,11 @@ resource "frontegg_workspace" "main" {
                             self.create_tfvars(api_info, resource['values'])
                             
                             break
+        
+        # Note: Most Frontegg resources don't support Terraform import
+        # Only workspace can be imported. Other resources like email templates,
+        # roles, permissions, webhooks, etc. cannot be imported via Terraform
+        # even though they can be discovered via API.
         
         print("\n✅ Setup complete!")
         print("\nYou can now:")
