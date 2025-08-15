@@ -469,7 +469,13 @@ class TerraformMigrator:
         state = json.loads(output)
         
         # Discover additional resources via API
-        additional_resources = self.discover_additional_resources_via_api()
+        # Use first environment if available for proper API access
+        first_env_id = None
+        if self.available_environments:
+            first_env_id = self.available_environments[0].get('id')
+            print(f"\n🌍 Using environment: {self.available_environments[0].get('environmentName')} for API discovery")
+        
+        additional_resources = self.discover_additional_resources_via_api(first_env_id)
         
         # Create enhanced export with both Terraform state and API resources
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1184,24 +1190,23 @@ frontend_stack  = "{frontend_stack}"
             # Add webhook ID as comment for reference
             config_lines.append(f'# Source webhook ID: {webhook_id}')
             config_lines.append(f'resource "frontegg_webhook" "{safe_name}" {{')
-            config_lines.append(f'  display_name = "{display_name}"')
-            config_lines.append(f'  enabled      = {str(webhook.get("isActive", True)).lower()}')
-            config_lines.append(f'  url          = "{webhook.get("url", "")}"')
+            config_lines.append(f'  description = "{display_name}"')  # Terraform uses 'description' not 'display_name'
+            config_lines.append(f'  enabled     = {str(webhook.get("isActive", True)).lower()}')
+            config_lines.append(f'  url         = "{webhook.get("url", "")}"')
             
-            # Event keys (triggers)
+            # Event keys (events in Terraform provider)
             event_keys = webhook.get('eventKeys', [])
             if event_keys:
-                config_lines.append(f'  triggers     = {json.dumps(event_keys)}')
+                config_lines.append(f'  events = {json.dumps(event_keys)}')
             
             # HTTP method (if not default POST)
             http_method = webhook.get('httpMethod', 'POST')
             if http_method != 'POST':
                 config_lines.append(f'  # HTTP Method: {http_method}')
             
-            # Secret - needs manual update
-            if webhook.get('secret'):
-                config_lines.append(f'  # Note: Secret needs to be manually set or use var.webhook_secret_{safe_name}')
-                config_lines.append(f'  # secret = "YOUR_SECRET_HERE"')
+            # Secret - required field, use placeholder
+            # Note: We can't copy the actual secret for security reasons
+            config_lines.append(f'  secret = "CHANGE_ME_{safe_name.upper()}_SECRET"  # TODO: Update with actual secret')
             
             # Custom payload if exists
             custom_payload = webhook.get('customPayload', '')
@@ -1222,17 +1227,8 @@ frontend_stack  = "{frontend_stack}"
             print("\n📤 Exporting from source account...")
             self.load_credentials('source')
             
-            # Discover resources for specific environment
-            domain, origins = self.authenticate_minimal()
-            api_resources = self.discover_additional_resources_via_api(source_env_id)
-            
-            # Save export with environment ID in filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            env_suffix = f"_{source_env_id[:8]}" if source_env_id else ""
-            export_file = f"terraform_export_{timestamp}{env_suffix}.json"
-            
-            # Export Terraform state and combine with API resources
-            # ... existing export logic ...
+            # Perform the actual export
+            export_file = self.export_configuration()
             
         # Import to destination
         print("\n📥 Importing to destination account...")
