@@ -324,35 +324,6 @@ class TerraformMigrator:
         except Exception as e:
             print(f"    ❌ Error fetching permissions: {e}")
         
-        # Discover webhooks
-        print("  🪝 Fetching webhooks...")
-        try:
-            # Construct webhook URL based on region
-            webhook_base_urls = {
-                "US": "https://frontegg-prod.us.frontegg.com",
-                "EU": "https://frontegg-prod.frontegg.com",
-                "UK": "https://frontegg-prod.uk.frontegg.com",
-                "CA": "https://frontegg-prod.ca.frontegg.com",
-                "AU": "https://frontegg-prod.au.frontegg.com"
-            }
-            webhook_base = webhook_base_urls.get(self.region, "https://frontegg-prod.frontegg.com")
-            webhook_url = f"{webhook_base}/webhook"
-            
-            response = requests.get(webhook_url, headers=headers)
-            
-            if response.status_code == 200:
-                data = response.json()
-                webhooks = data if isinstance(data, list) else data.get('items', data.get('data', []))
-                if webhooks:
-                    print(f"    ✅ Found {len(webhooks)} webhook(s)")
-                    resources['webhooks'] = webhooks
-                else:
-                    print("    ⚠️  No webhooks found")
-            else:
-                print(f"    ❌ Could not fetch webhooks: {response.status_code}")
-        except Exception as e:
-            print(f"    ❌ Error fetching webhooks: {e}")
-        
         return resources
     
     def create_custom_permissions(self, permissions: List[Dict], environment_id: str = None) -> Dict[str, List[Dict]]:
@@ -753,13 +724,6 @@ frontend_stack  = "{frontend_stack}"
                 with open("permissions_imported.tf", "w") as f:
                     f.write(permissions_config)
                 print(f"  ✅ Generated config for {len(api_resources['permissions'])} permissions")
-            
-            # Generate webhooks configuration
-            if 'webhooks' in api_resources:
-                webhooks_config = self.generate_webhooks_config(api_resources['webhooks'])
-                with open("webhooks_imported.tf", "w") as f:
-                    f.write(webhooks_config)
-                print(f"  ✅ Generated config for {len(api_resources['webhooks'])} webhook(s)")
         
         print("\n✅ Configuration files generated!")
         
@@ -1169,69 +1133,6 @@ frontend_stack  = "{frontend_stack}"
             config_lines.append(f'    redirect_url = "{oidc.get("redirect_url", "")}"')
             config_lines.append('  }')
         config_lines.append('}')
-        
-        return '\n'.join(config_lines)
-    
-    def generate_webhooks_config(self, webhooks: List[Dict]) -> str:
-        """Generate Terraform configuration for webhooks."""
-        if not webhooks:
-            return "# No webhooks found"
-        
-        config_lines = ['# Webhooks Configuration Reference']
-        config_lines.append('# Generated from source account')
-        config_lines.append('# ⚠️  IMPORTANT: Webhooks cannot be created via Terraform/API (404 error)')
-        config_lines.append('#              Please manually recreate these webhooks in the Frontegg portal')
-        config_lines.append('#              using the configuration below as reference\n')
-        
-        for webhook in webhooks:
-            # Create a safe resource name
-            display_name = webhook.get('displayName', 'webhook')
-            webhook_id = webhook.get('_id', '')
-            safe_name = display_name.lower().replace(' ', '_').replace('-', '_').replace('.', '_')
-            
-            # Add webhook ID as comment for reference
-            config_lines.append(f'# Source webhook ID: {webhook_id}')
-            config_lines.append(f'# Webhook Name: {display_name}')
-            config_lines.append(f'# ')
-            config_lines.append(f'# COMMENTED OUT - Manual creation required in Frontegg portal')
-            config_lines.append(f'# resource "frontegg_webhook" "{safe_name}" {{')
-            config_lines.append(f'#   description = "{display_name}"')
-            config_lines.append(f'#   enabled     = {str(webhook.get("isActive", True)).lower()}')
-            config_lines.append(f'#   url         = "{webhook.get("url", "")}"')
-            
-            # Event keys (events in Terraform provider)
-            event_keys = webhook.get('eventKeys', [])
-            if event_keys:
-                config_lines.append(f'#   events = {json.dumps(event_keys)}')
-            
-            # HTTP method (if not default POST)
-            http_method = webhook.get('httpMethod', 'POST')
-            if http_method != 'POST':
-                config_lines.append(f'#   # HTTP Method: {http_method}')
-            
-            # Secret - required field, use placeholder
-            config_lines.append(f'#   secret = "YOUR_SECRET_HERE"')
-            
-            # Custom payload if exists
-            custom_payload = webhook.get('customPayload', '')
-            if custom_payload:
-                config_lines.append(f'#   # Custom payload exists:')
-                config_lines.append(f'#   # custom_payload = <<-EOT')
-                config_lines.append(f'#   # {custom_payload}')
-                config_lines.append(f'#   # EOT')
-            
-            config_lines.append('# }\n')
-            
-            # Add manual creation instructions
-            config_lines.append(f'# To recreate this webhook manually:')
-            config_lines.append(f'# 1. Go to Frontegg Portal > Environments > Webhooks')
-            config_lines.append(f'# 2. Click "Add Webhook"')
-            config_lines.append(f'# 3. Set Name: {display_name}')
-            config_lines.append(f'# 4. Set URL: {webhook.get("url", "")}')
-            config_lines.append(f'# 5. Set Events: {", ".join(event_keys) if event_keys else "None"}')
-            config_lines.append(f'# 6. Set Secret: (generate a new secure secret)')
-            config_lines.append(f'# 7. Enable: {webhook.get("isActive", True)}')
-            config_lines.append('')
         
         return '\n'.join(config_lines)
     
