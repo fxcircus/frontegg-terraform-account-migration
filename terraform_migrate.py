@@ -335,6 +335,61 @@ class TerraformMigrator:
             print(f"    ❌ Error fetching permissions: {e}")
         
         return resources
+    
+    def create_custom_permissions(self, permissions: List[Dict]) -> Dict[str, List[Dict]]:
+        """Create custom permissions in the destination account via API."""
+        created_permissions = []
+        failed_permissions = []
+        
+        for perm in permissions:
+            perm_key = perm.get('key', '')
+            if not perm_key or perm_key.startswith('fe.'):
+                continue  # Skip built-in permissions
+            
+            print(f"  📝 Creating custom permission: {perm_key}")
+            
+            # Prepare permission data
+            permission_data = {
+                "key": perm_key,
+                "name": perm.get('name', perm_key),
+                "description": perm.get('description', ''),
+            }
+            
+            # Note: Not including categoryId as categories may not exist yet in destination
+            
+            try:
+                # Try to create the permission (API expects an array)
+                create_url = f"{self.api_base_url}/identity/resources/permissions/v1"
+                response = requests.post(
+                    create_url,
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=[permission_data]  # API expects an array
+                )
+                
+                if response.status_code in [200, 201]:
+                    created_permissions.append(perm)
+                    print(f"    ✅ Created: {perm_key}")
+                elif response.status_code == 409 or (response.status_code == 400 and "already exists" in response.text.lower()):
+                    # Permission already exists
+                    created_permissions.append(perm)
+                    print(f"    ℹ️  Already exists: {perm_key}")
+                else:
+                    failed_permissions.append(perm)
+                    print(f"    ❌ Failed ({response.status_code}): {perm_key}")
+                    if response.text:
+                        print(f"       Error: {response.text}")
+                        
+            except Exception as e:
+                failed_permissions.append(perm)
+                print(f"    ❌ Error creating {perm_key}: {e}")
+        
+        return {
+            "created": created_permissions,
+            "failed": failed_permissions
+        }
             
     def export_configuration(self):
         """Export all configuration from source account."""
@@ -581,6 +636,42 @@ frontend_stack  = "{frontend_stack}"
             self.client_id = temp_client
             self.secret_key = temp_secret
         
+        # Create custom permissions first (before generating role configs)
+        if api_resources and 'permissions' in api_resources:
+            print("\n🔑 Creating custom permissions in destination account...")
+            
+            # Separate custom and built-in permissions
+            custom_permissions = []
+            for perm in api_resources['permissions']:
+                if perm.get('key') and not perm['key'].startswith('fe.'):
+                    custom_permissions.append(perm)
+            
+            if custom_permissions:
+                print(f"  Found {len(custom_permissions)} custom permissions to create")
+                
+                # Authenticate with destination account
+                temp_client = self.client_id
+                temp_secret = self.secret_key
+                self.client_id = os.environ.get('DEST_FRONTEGG_CLIENT_ID')
+                self.secret_key = os.environ.get('DEST_FRONTEGG_SECRET_KEY')
+                
+                # Re-authenticate to get fresh token for destination
+                self.authenticate_minimal()
+                
+                # Create the custom permissions
+                result = self.create_custom_permissions(custom_permissions)
+                
+                # Restore original credentials
+                self.client_id = temp_client
+                self.secret_key = temp_secret
+                
+                if result['created']:
+                    print(f"  ✅ Successfully created/verified {len(result['created'])} custom permissions")
+                if result['failed']:
+                    print(f"  ⚠️  Failed to create {len(result['failed'])} permissions")
+            else:
+                print("  ℹ️  No custom permissions to create")
+        
         # Generate configurations for API resources (email templates, etc.)
         if api_resources:
             print("\n📝 Generating configurations for API resources...")
@@ -795,7 +886,7 @@ frontend_stack  = "{frontend_stack}"
         """Generate Terraform configuration for roles."""
         config_lines = ['# Roles']
         config_lines.append('# Generated from source account')
-        config_lines.append('# Note: Custom permissions (non fe.*) are excluded from permission_ids\n')
+        config_lines.append('# Note: Custom permissions are created via API before applying roles\n')
         
         # Create mapping of permission ID to key for source permissions
         perm_id_to_key = {}
@@ -829,21 +920,25 @@ frontend_stack  = "{frontend_stack}"
             level = role.get('level', 0)
             config_lines.append(f'  level = {level}')
             
-            # Map permission IDs to keys and filter out custom permissions
+            # Map permission IDs to keys and include ALL permissions
             if role.get('permissions') and len(role['permissions']) > 0:
-                # Convert permission IDs to keys
-                perm_keys = []
+                # Convert permission IDs to keys/references
+                perm_refs = []
                 for perm_id in role['permissions']:
                     perm_key = perm_id_to_key.get(perm_id)
-                    # Only include built-in Frontegg permissions (fe.*)
-                    if perm_key and perm_key.startswith('fe.'):
-                        # Create reference to the data source
-                        safe_perm_name = perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')
-                        perm_keys.append(f'data.frontegg_permission.{safe_perm_name}.id')
+                    if perm_key:
+                        if perm_key.startswith('fe.'):
+                            # Built-in permission - use data source reference
+                            safe_perm_name = perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')
+                            perm_refs.append(f'data.frontegg_permission.{safe_perm_name}.id')
+                        else:
+                            # Custom permission - use data source reference (will exist after API creation)
+                            safe_perm_name = perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')
+                            perm_refs.append(f'data.frontegg_permission.custom_{safe_perm_name}.id')
                 
-                if perm_keys:
+                if perm_refs:
                     config_lines.append('  permission_ids = [')
-                    for perm_ref in perm_keys:
+                    for perm_ref in perm_refs:
                         config_lines.append(f'    {perm_ref},')
                     config_lines.append('  ]')
                 else:
@@ -880,8 +975,8 @@ frontend_stack  = "{frontend_stack}"
         """Generate Terraform configuration for permissions."""
         config_lines = ['# Permissions']
         config_lines.append('# Generated from source account')
-        config_lines.append('# Note: Only built-in Frontegg permissions (fe.*) are included')
-        config_lines.append('# Custom permissions must be created via API/UI first\n')
+        config_lines.append('# Note: Both built-in (fe.*) and custom permissions are included')
+        config_lines.append('# Custom permissions are created via API before applying this config\n')
         
         # Separate custom and built-in permissions
         builtin_permissions = []
@@ -896,13 +991,6 @@ frontend_stack  = "{frontend_stack}"
             else:
                 custom_permissions.append(perm)
         
-        # Log custom permissions that need manual creation
-        if custom_permissions:
-            config_lines.append('# CUSTOM PERMISSIONS FOUND (create these manually):')
-            for perm in custom_permissions:
-                config_lines.append(f'#   - {perm.get("key")}: {perm.get("name", "No name")}')
-            config_lines.append('')
-        
         # Create a mapping of permission keys to role assignments
         perm_to_roles = {}
         for role in roles:
@@ -912,7 +1000,26 @@ frontend_stack  = "{frontend_stack}"
                         perm_to_roles[perm] = []
                     perm_to_roles[perm].append(role.get('key', role.get('name')))
         
-        # Generate data sources only for built-in permissions
+        # Generate data sources for custom permissions (created via API)
+        if custom_permissions:
+            config_lines.append('# CUSTOM PERMISSIONS (created via API):')
+            for perm in custom_permissions:
+                perm_key = perm.get('key', '')
+                safe_name = 'custom_' + perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')
+                
+                config_lines.append(f'# Permission: {perm_key}')
+                if perm.get('name'):
+                    config_lines.append(f'# Name: {perm.get("name")}')
+                if perm.get('description'):
+                    config_lines.append(f'# Description: {perm.get("description")}')
+                
+                config_lines.append(f'data "frontegg_permission" "{safe_name}" {{')
+                config_lines.append(f'  key = "{perm_key}"')
+                config_lines.append('}\n')
+            
+            config_lines.append('# BUILT-IN FRONTEGG PERMISSIONS:')
+        
+        # Generate data sources for built-in permissions
         for perm in builtin_permissions:
             perm_key = perm.get('key', '')
             safe_name = perm_key.lower().replace('.', '_').replace('*', 'all').replace(' ', '_').replace('-', '_')

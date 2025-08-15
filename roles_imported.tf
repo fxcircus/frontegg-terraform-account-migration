@@ -1,6 +1,6 @@
 # Roles
 # Generated from source account
-# Note: Custom permissions (non fe.*) are excluded from permission_ids
+# Note: Custom permissions are created via API before applying roles
 
 resource "frontegg_role" "plume" {
   name        = "plume"

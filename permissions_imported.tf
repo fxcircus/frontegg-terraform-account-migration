@@ -1,11 +1,16 @@
 # Permissions
 # Generated from source account
-# Note: Only built-in Frontegg permissions (fe.*) are included
-# Custom permissions must be created via API/UI first
+# Note: Both built-in (fe.*) and custom permissions are included
+# Custom permissions are created via API before applying this config
 
-# CUSTOM PERMISSIONS FOUND (create these manually):
-#   - test123: test123
+# CUSTOM PERMISSIONS (created via API):
+# Permission: test123
+# Name: test123
+data "frontegg_permission" "custom_test123" {
+  key = "test123"
+}
 
+# BUILT-IN FRONTEGG PERMISSIONS:
 # Permission: fe.secure.delete.users
 # Name: Delete users
 # Description: Delete users from account
