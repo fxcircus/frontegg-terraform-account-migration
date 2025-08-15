@@ -1,204 +1,223 @@
 # Frontegg Terraform Migration Tool
 
-**ONE SCRIPT** to manage all Frontegg settings using Terraform with minimal API calls.
+A powerful tool to migrate Frontegg configurations between accounts using Terraform and API discovery.
 
-## 🎯 What This Does
+## 🚀 Features
 
-- **Gets ALL Frontegg workspace settings** using Terraform (not APIs)
-- **Only 1 API call** for `frontegg_domain` and `allowed_origins`
-- **Exports complete configuration** to JSON
-- **Imports to another account** for migration
+- **Fully Automated Migration**: One command migrates everything
+- **Hybrid Approach**: Uses Terraform where possible, API for discovery
+- **Smart Redirect URLs**: Automatically uses destination account's login URL
+- **Zero Manual Setup**: Automatically imports workspaces and configures everything
+- **Preserves Customizations**: Keeps all your custom settings and modifications
 
-## 🚀 Quick Start
+## ✨ What Gets Migrated
 
-### Prerequisites
+### ✅ **Fully Migrated** (Working Now)
 
-- Python 3.6+
-- Terraform >= 1.0.3
-- Frontegg API credentials
-
-### Step 1: Setup Credentials
-
-Create `.env` file:
-```bash
-FRONTEGG_CLIENT_ID=your-client-id
-FRONTEGG_SECRET_KEY=your-secret-key
-FRONTEGG_REGION=US  # Options: EU, US, UK, CA, AU
-FRONTEGG_ENVIRONMENT=development  # Optional, defaults to development
-```
-
-### Step 2: Initial Setup (First Time Only)
-
-```bash
-python3 terraform_migrate.py setup
-```
-
-This will:
-1. Initialize Terraform
-2. Import your existing workspace into Terraform state
-3. Make 1 API call to get `frontegg_domain` and `allowed_origins`
-4. Generate `workspace.tf` with complete configuration
-5. Create `terraform.tfvars` with all values
-
-### Step 3: Export Configuration
-
-```bash
-python3 terraform_migrate.py export
-```
-
-Creates `terraform_export_[timestamp].json` with ALL settings from Terraform state.
-
-## 📊 What Gets Migrated
-
-### ✅ Successfully Migrated (via Terraform State)
-
-The tool successfully exports and can migrate all **workspace-level** configurations:
-
-**Core Settings:**
-- Workspace name, country, backend/frontend stacks
-- Frontegg domain (fetched via API)
-- Allowed origins (fetched via API)
-- Open SaaS configuration
-- Custom domains
-
-**Security Policies:**
-- **MFA Policy** - Enforcement mode, device remembering, expiration time
-- **MFA Authentication App** - Service name configuration
-- **Password Policy** - Min/max length, complexity requirements, passphrase settings, history
-- **Lockout Policy** - Maximum login attempts
-- **CAPTCHA Policy** - Bot protection settings
-
-**Authentication & SSO:**
+#### Security & Authentication Settings
+- **MFA Policies** - Enforcement mode, device remembering, expiration
+- **MFA Authentication App** - Service name configuration  
+- **Password Policies** - Min/max length, complexity, passphrases, history
+- **Lockout Policies** - Maximum login attempts
 - **Hosted Login** - Allowed redirect URLs
 - **SAML Configuration** - ACS URL, SP Entity ID, redirect URL
 - **OIDC Configuration** - Redirect URLs
-- **SSO Multi-tenant Policy** - Domain-based SSO rules
+- **Open SaaS Settings** - Installation status
 
-### ❌ What Does NOT Get Migrated
+#### Email Configuration  
+- **Email Templates** (22 supported types)
+  - Preserves all customizations (from_name, subject, HTML content)
+  - Automatically fixes redirect URLs using destination's domain
+  - Includes: ResetPassword, ActivateUser, MagicLink, MFA templates, etc.
 
-Due to Terraform provider limitations, the following resources **cannot be imported** even though they exist:
+### ❌ **NOT Migrated** (Destination Keeps Its Own)
+- **Workspace Name** - Each account maintains its own
+- **Country Setting** - Preserved per account
+- **Backend/Frontend Stacks** - Not changed
+- **Frontegg Domain** - Unique per account
+- **Allowed Origins** - Destination's CORS settings preserved
+- **Custom Domains** - Account-specific
 
-**Email Configuration (Provider doesn't support import):**
-- Email templates (28 types including ResetPassword, ActivateUser, etc.)
-- Email provider settings (SMTP, SendGrid, etc.)
-- *Note: These can be discovered via API but Terraform cannot import them*
+### 🚧 **Coming Soon**
+- **Roles** - Custom roles and configurations
+- **Permissions** - Granular permissions
+- **Permission Categories** - Permission groupings
+- **Webhooks** - Event notifications (pending API investigation)
 
-**Identity & Access (Limited API/import support):**
-- Roles and role assignments
-- Permissions and permission categories
-- User groups
+## 📋 Prerequisites
 
-**Application Settings:**
-- Applications and redirect URIs
-- Webhooks and prehooks
-- API secrets and keys
-- Social login configurations (Google, GitHub, etc.)
+- Python 3.6+
+- Terraform 1.0+
+- Frontegg accounts with API access
+- `requests` Python package (`pip install requests`)
 
-**User & Tenant Data (Not workspace-level):**
-- Users and their passwords
-- User sessions and tokens
-- Tenant configurations
-- Tenant-specific customizations
+## 🛠️ Quick Start
 
-**Integrations:**
-- External user sources (Auth0, Cognito, Firebase)
-- Third-party integrations
-- Custom branding and themes
-
-### 📝 Technical Limitations
-
-The Frontegg Terraform provider has limited import capabilities:
-- ✅ **Workspace** - Full import support (`terraform import frontegg_workspace.main singleton`)
-- ❌ **Most other resources** - No import support, can only be created new
-- 📍 This is a provider limitation, not an API limitation
-
-For complete migration including all resources, you would need to use the API directly or manually recreate these resources in the target account.
-
-## 🔄 Migration to Another Account
-
-After exporting from source account:
+### 1. Clone and Setup
 
 ```bash
-# 1. Update .env with target account credentials
-vim .env
-
-# 2. Import configuration to target account
-python3 terraform_migrate.py import terraform_export_*.json
-
-# 3. Review and apply
-terraform plan
-terraform apply
+git clone <your-repo>
+cd terraform_claude
+cp .env.example .env
 ```
+
+### 2. Configure Credentials
+
+Edit `.env` with your Frontegg credentials:
+
+```env
+# Source Account (to export from)
+SOURCE_FRONTEGG_CLIENT_ID=your-source-client-id
+SOURCE_FRONTEGG_SECRET_KEY=your-source-secret-key
+SOURCE_FRONTEGG_REGION=US
+
+# Destination Account (to import to)
+DEST_FRONTEGG_CLIENT_ID=your-dest-client-id
+DEST_FRONTEGG_SECRET_KEY=your-dest-secret-key
+DEST_FRONTEGG_REGION=US
+```
+
+### 3. Run Migration
+
+```bash
+python3 terraform_migrate.py migrate
+```
+
+That's it! The tool will:
+1. Export all settings from source account
+2. Import existing workspace automatically
+3. Get destination's login URL for proper redirects
+4. Generate Terraform configurations
+5. Apply everything to destination account
+
+## 🎯 Usage Options
+
+### Full Migration (Recommended)
+```bash
+python3 terraform_migrate.py migrate
+```
+
+### Step-by-Step Migration
+
+**Export from source:**
+```bash
+python3 terraform_migrate.py export
+# Creates: terraform_export_TIMESTAMP.json
+```
+
+**Import to destination:**
+```bash
+python3 terraform_migrate.py import terraform_export_TIMESTAMP.json
+# Applies configurations to destination
+```
+
+## 🔧 How It Works
+
+### 1. Export Phase
+- Authenticates with source account
+- Creates temporary workspace.tf if needed
+- Imports existing workspace via `terraform import`
+- Exports Terraform state
+- Discovers additional resources via API (email templates, etc.)
+- Saves everything to timestamped JSON file
+
+### 2. Import Phase  
+- Authenticates with destination account
+- Gets destination's login URL via `/vendors` API
+- Generates Terraform configurations with:
+  - Destination's own name, country, stacks
+  - Security policies from source
+  - Email templates with fixed redirect URLs
+- Runs `terraform plan` automatically
+- Applies changes with `terraform apply -auto-approve`
+
+### 3. Smart Features
+- **Automatic Workspace Import**: No manual `terraform import` needed
+- **Redirect URL Fix**: Uses destination's login URL + path patterns
+- **Template Filtering**: Only includes Terraform-supported template types
+- **Validation**: Checks for errors and provides clear feedback
 
 ## 📁 Project Structure
 
 ```
 .
-├── terraform_migrate.py           # THE SINGLE SCRIPT for export/import
-├── clean.py                      # Clean sensitive data (safe for GitHub)
-├── .env.example                  # Template for credentials
-├── .env                          # Your credentials (git-ignored)
-├── .gitignore                    # Prevents committing sensitive files
-│
-├── provider.tf                   # Terraform provider configuration
-├── variables.tf                  # Variable definitions
-│
-└── Generated files (auto-created, git-ignored):
-    ├── workspace.tf              # Generated Terraform configuration
-    ├── terraform.tfvars          # Generated variable values
-    ├── terraform.tfstate         # Terraform state (contains all settings)
-    └── terraform_export_*.json  # Exported configurations
+├── terraform_migrate.py      # Main migration tool
+├── clean.py                  # Environment cleanup utility
+├── .env                      # Your credentials (gitignored)
+├── .env.example              # Template for credentials
+├── .gitignore                # Protects sensitive files
+├── provider.tf               # Terraform provider config
+├── variables.tf              # Variable definitions
+└── README.md                 # This file
 ```
 
-## 🧹 Clean Environment (For GitHub)
+## 🧹 Cleanup
 
-Before committing to GitHub, run:
-
+To reset your environment:
 ```bash
-python3 clean.py
+python3 clean.py -y
 ```
 
-This removes all sensitive data and account-specific files, making the repository safe to share.
+This removes all generated files while keeping your `.env` safe.
 
-## 🛠️ How It Works
+## 🔒 Security
 
-1. **Terraform manages everything** - The Frontegg provider handles the workspace
-2. **Minimal API usage** - Only calls API once for domain/origins (not available in state)
-3. **State contains all settings** - Terraform state has complete configuration
-4. **Simple export/import** - JSON file contains everything needed
+- Never commit `.env` or `terraform.tfvars`
+- Keep `terraform.tfstate` files secure
+- Review configurations before applying
+- Use `.gitignore` to prevent accidents
 
-## ⚠️ Important Notes
+## 🐛 Troubleshooting
 
-- **Never commit `.env`** to version control
-- **Workspace domain** is account-specific (managed by Frontegg)
-- **First run `setup`** before export/import
-- Test migrations in development first
+### Authentication Errors
+- Verify credentials in `.env`
+- Check region settings (US, EU, UK, CA, AU)
+- Ensure API access is enabled
+
+### Terraform Errors
+- Run `terraform init` if provider errors occur
+- Remove conflicting `workspace.tf` files
+- Check for duplicate resource definitions
+
+### Email Template Errors
+- Some templates may fail if redirect URLs are invalid
+- The tool automatically uses destination's login URL
+- 22 out of 28 template types are supported by Terraform
 
 ## 🌍 Multi-Region Support
 
-Set region in `.env`:
-```
-FRONTEGG_REGION=US  # EU, US, UK, CA, AU
-```
+Supports all Frontegg regions:
+- `US` - United States
+- `EU` - Europe
+- `UK` - United Kingdom  
+- `CA` - Canada
+- `AU` - Australia
 
-## 🔧 Troubleshooting
+## 📊 Migration Summary
 
-### If workspace not imported
-```bash
-python3 terraform_migrate.py setup
-```
+| Resource Type | Migration Status | Method |
+|--------------|------------------|---------|
+| MFA Policies | ✅ Full | Terraform |
+| Password Policies | ✅ Full | Terraform |
+| Email Templates | ✅ Full | API + Terraform |
+| SAML/OIDC | ✅ Full | Terraform |
+| Workspace Name | ❌ Preserved | N/A |
+| Domain | ❌ Preserved | N/A |
+| Roles | 🚧 Coming Soon | API + Terraform |
+| Permissions | 🚧 Coming Soon | API + Terraform |
 
-### Check what's in state
-```bash
-terraform show
-```
+## 🤝 Contributing
 
-### Verify credentials
-```bash
-cat .env | grep FRONTEGG
-```
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Test your changes
+4. Submit a pull request
 
-## 📚 Documentation
+## 📝 License
 
-- [Frontegg Terraform Provider](https://registry.terraform.io/providers/frontegg/frontegg)
-- [Frontegg Documentation](https://docs.frontegg.com)
+[Your License Here]
+
+## 🙏 Acknowledgments
+
+Built with Frontegg's Terraform Provider and API

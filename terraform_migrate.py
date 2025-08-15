@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """
-Frontegg Terraform Export/Import Tool
-This is THE SINGLE SCRIPT for getting all Frontegg settings using Terraform with minimal API calls.
+Frontegg Terraform Migration Tool
+Migrates all Frontegg settings from source to destination account.
 
 Features:
-- Uses Terraform to manage everything (workspace configuration)
-- Only 1 API call for frontegg_domain and allowed_origins
-- Exports complete configuration to JSON
-- Can import configuration to another account
-- Works out-of-the-box with just credentials
+- Supports separate source and destination accounts
+- Exports from source using Terraform state + API discovery
+- Imports to destination by generating and applying Terraform configs
+- Handles email templates that can't be imported but can be created
 
 Usage:
-1. Initial setup (import existing workspace):
-   python3 terraform_migrate.py setup
-
-2. Export configuration:
+1. Export from source account:
    python3 terraform_migrate.py export
 
-3. Import to another account:
+2. Import to destination account:
    python3 terraform_migrate.py import <export_file.json>
+
+3. Full migration (export + import):
+   python3 terraform_migrate.py migrate
 """
 
 import json
@@ -27,11 +26,12 @@ import sys
 import os
 import requests
 import base64
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 
 class TerraformMigrator:
-    def __init__(self):
+    def __init__(self, account_type: str = None):
+        self.account_type = account_type  # 'source' or 'dest'
         self.client_id = None
         self.secret_key = None
         self.access_token = None
@@ -39,8 +39,11 @@ class TerraformMigrator:
         self.api_base_url = None
         self.selected_environment = None
         
-    def load_credentials(self):
+    def load_credentials(self, account_type: str = None):
         """Load credentials from environment or .env file."""
+        if account_type:
+            self.account_type = account_type
+            
         if os.path.exists('.env'):
             with open('.env', 'r') as f:
                 for line in f:
@@ -49,9 +52,20 @@ class TerraformMigrator:
                         key, value = line.split('=', 1)
                         os.environ[key] = value.strip('"').strip("'")
         
-        self.client_id = os.environ.get('FRONTEGG_CLIENT_ID')
-        self.secret_key = os.environ.get('FRONTEGG_SECRET_KEY')
-        self.region = os.environ.get('FRONTEGG_REGION', 'EU').upper()
+        # Determine which credentials to use
+        if self.account_type == 'source':
+            self.client_id = os.environ.get('SOURCE_FRONTEGG_CLIENT_ID')
+            self.secret_key = os.environ.get('SOURCE_FRONTEGG_SECRET_KEY')
+            self.region = os.environ.get('SOURCE_FRONTEGG_REGION', 'US').upper()
+        elif self.account_type == 'dest':
+            self.client_id = os.environ.get('DEST_FRONTEGG_CLIENT_ID')
+            self.secret_key = os.environ.get('DEST_FRONTEGG_SECRET_KEY')
+            self.region = os.environ.get('DEST_FRONTEGG_REGION', 'US').upper()
+        else:
+            # Fallback to old env vars for backward compatibility
+            self.client_id = os.environ.get('FRONTEGG_CLIENT_ID')
+            self.secret_key = os.environ.get('FRONTEGG_SECRET_KEY')
+            self.region = os.environ.get('FRONTEGG_REGION', 'US').upper()
         
         # Set API URLs based on region
         region_urls = {
@@ -62,14 +76,22 @@ class TerraformMigrator:
             'AU': 'https://api.au.frontegg.com'
         }
         
-        self.api_base_url = region_urls.get(self.region, region_urls['EU'])
+        self.api_base_url = region_urls.get(self.region, region_urls['US'])
         
         if not self.client_id or not self.secret_key:
-            print("❌ Error: Frontegg credentials not found!")
-            print("\nPlease set credentials in .env file")
+            print(f"❌ Error: Frontegg credentials not found for {self.account_type or 'account'}!")
+            print("\nPlease set credentials in .env file:")
+            if self.account_type == 'source':
+                print("  SOURCE_FRONTEGG_CLIENT_ID=...")
+                print("  SOURCE_FRONTEGG_SECRET_KEY=...")
+                print("  SOURCE_FRONTEGG_REGION=...")
+            elif self.account_type == 'dest':
+                print("  DEST_FRONTEGG_CLIENT_ID=...")
+                print("  DEST_FRONTEGG_SECRET_KEY=...")
+                print("  DEST_FRONTEGG_REGION=...")
             sys.exit(1)
             
-        print(f"✅ Credentials loaded")
+        print(f"✅ {self.account_type.capitalize() if self.account_type else 'Account'} credentials loaded")
         print(f"📍 Region: {self.region}")
         
     def run_command(self, cmd: List[str]) -> tuple:
@@ -98,336 +120,171 @@ class TerraformMigrator:
             
             if response.status_code == 200:
                 data = response.json()
-                self.access_token = data.get('accessToken', data.get('token'))
+                self.access_token = data.get('token')
                 
-                # Decode token to get environment
-                token_data = self.decode_jwt_token(self.access_token)
-                if token_data and 'customClaims' in token_data:
-                    account_envs = token_data.get('customClaims', {}).get('accountEnvironments', [])
-                    if account_envs:
-                        # Use development by default
-                        env_preference = os.environ.get('FRONTEGG_ENVIRONMENT', 'development').lower()
-                        for env in account_envs:
-                            if env.get('environmentName', '').lower() == env_preference:
-                                self.selected_environment = env
-                                break
-                        if not self.selected_environment and account_envs:
-                            self.selected_environment = account_envs[0]
-                            
-                return True
-        except:
-            pass
-        return False
-        
-    def decode_jwt_token(self, token):
-        """Decode JWT token."""
-        try:
-            parts = token.split('.')
-            if len(parts) != 3:
-                return None
-            payload = parts[1]
-            padding = 4 - (len(payload) % 4)
-            if padding != 4:
-                payload += '=' * padding
-            decoded = base64.urlsafe_b64decode(payload)
-            return json.loads(decoded)
-        except:
-            return None
-            
-    def get_workspace_info(self):
-        """Get frontegg_domain and allowed_origins from API."""
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        if self.selected_environment:
-            headers["frontegg-environment-id"] = self.selected_environment['id']
-        
-        vendors_url = f"{self.api_base_url}/vendors"
-        
-        try:
-            response = requests.get(vendors_url, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'frontegg_domain': data.get('host', ''),
-                    'allowed_origins': data.get('allowedOrigins', [])
-                }
-        except:
-            pass
-        return None
-        
-    def discover_roles_permissions(self):
-        """Discover and import roles and permissions."""
-        print("\n👥 Discovering roles and permissions...")
-        
-        if not self.access_token:
-            if not self.authenticate_minimal():
-                print("  ⚠️  Could not authenticate for roles discovery")
-                return
-        
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        if self.selected_environment:
-            headers["frontegg-environment-id"] = self.selected_environment['id']
-        
-        imported_count = 0
-        
-        # 1. Discover and import roles
-        print("  → Discovering roles...")
-        roles_url = f"{self.api_base_url}/identity/resources/roles/v2"
-        
-        try:
-            response = requests.get(roles_url, headers=headers)
-            if response.status_code == 200:
-                roles = response.json()
-                if isinstance(roles, list):
-                    print(f"    Found {len(roles)} roles")
-                    
-                    for role in roles:
-                        role_id = role.get('id', '')
-                        role_key = role.get('key', '')
-                        role_name = role.get('name', '')
-                        
-                        if role_id and role_key:
-                            # Import each role
-                            safe_name = role_key.lower().replace(' ', '_').replace('-', '_')
-                            resource_name = f"frontegg_role.{safe_name}"
-                            print(f"    → Importing role: {role_name} ({role_key})")
-                            
-                            # Create minimal config for the role
-                            role_config = f'''
-resource "frontegg_role" "{safe_name}" {{
-  key         = "{role_key}"
-  name        = "{role_name}"
-  description = "{role.get('description', '')}"
-}}
-'''
-                            temp_file = f"role_{safe_name}.tf"
-                            with open(temp_file, "w") as f:
-                                f.write(role_config)
-                            
-                            success, output = self.run_command([
-                                "terraform", "import",
-                                resource_name,
-                                role_id
-                            ])
-                            
-                            # Clean up temporary file
-                            if os.path.exists(temp_file):
-                                os.remove(temp_file)
-                            
-                            if success or "Import successful" in output or "Already exists in the state" in output:
-                                print(f"      ✅ Imported: {role_name}")
-                                imported_count += 1
-                            else:
-                                print(f"      ⚠️  Could not import: {role_name}")
+                # Decode JWT to get workspace info
+                payload = self.access_token.split('.')[1]
+                padded = payload + '=' * (4 - len(payload) % 4)
+                decoded = json.loads(base64.b64decode(padded))
+                
+                domain = decoded.get('domain', '')
+                origins = decoded.get('customAttributes', {}).get('allowedOrigins', [])
+                
+                if domain:
+                    print(f"  ✅ Domain: {domain}")
                 else:
-                    print("    ⚠️  No roles found")
-            else:
-                print(f"    ⚠️  Could not fetch roles: {response.status_code}")
-        except Exception as e:
-            print(f"    ❌ Error discovering roles: {e}")
-        
-        # 2. Discover and import permissions
-        print("  → Discovering permissions...")
-        permissions_url = f"{self.api_base_url}/identity/resources/permissions/v2"
-        
-        try:
-            response = requests.get(permissions_url, headers=headers)
-            if response.status_code == 200:
-                permissions = response.json()
-                if isinstance(permissions, list):
-                    print(f"    Found {len(permissions)} permissions")
+                    # print(f"  ⚠️  No domain found in token, checking alternatives...")
+                    # Debug: show what we have - commented out for production
+                    # print(f"  Debug - Token payload keys: {list(decoded.keys())}")
+                    # print(f"  Debug - CustomAttributes: {decoded.get('customAttributes', {})}")
                     
-                    for permission in permissions:
-                        perm_id = permission.get('id', '')
-                        perm_key = permission.get('key', '')
-                        perm_name = permission.get('name', '')
+                    # Try alternative methods
+                    domain = decoded.get('customAttributes', {}).get('domain', '')
+                    if not domain:
+                        # Try workspaceId approach
+                        workspace_id = decoded.get('workspaceId', '')
+                        if not workspace_id:
+                            # Try tenantId
+                            workspace_id = decoded.get('tenantId', '')
                         
-                        if perm_id and perm_key:
-                            # Import each permission
-                            safe_name = perm_key.lower().replace(' ', '_').replace('-', '_').replace('.', '_')
-                            resource_name = f"frontegg_permission.{safe_name}"
-                            print(f"    → Importing permission: {perm_name} ({perm_key})")
-                            
-                            # Create minimal config for the permission
-                            perm_config = f'''
-resource "frontegg_permission" "{safe_name}" {{
-  key         = "{perm_key}"
-  name        = "{perm_name}"
-  description = "{permission.get('description', '')}"
-}}
-'''
-                            temp_file = f"permission_{safe_name}.tf"
-                            with open(temp_file, "w") as f:
-                                f.write(perm_config)
-                            
-                            success, output = self.run_command([
-                                "terraform", "import",
-                                resource_name,
-                                perm_id
-                            ])
-                            
-                            # Clean up temporary file
-                            if os.path.exists(temp_file):
-                                os.remove(temp_file)
-                            
-                            if success or "Import successful" in output or "Already exists in the state" in output:
-                                print(f"      ✅ Imported: {perm_name}")
-                                imported_count += 1
-                            else:
-                                print(f"      ⚠️  Could not import: {perm_name}")
-                else:
-                    print("    ⚠️  No permissions found")
+                        if workspace_id:
+                            # Build domain based on region
+                            if 'us' in self.api_base_url:
+                                domain = f"app-{workspace_id}.us.frontegg.com"
+                            elif 'uk' in self.api_base_url:
+                                domain = f"app-{workspace_id}.uk.frontegg.com"
+                            elif 'ca' in self.api_base_url:
+                                domain = f"app-{workspace_id}.ca.frontegg.com"
+                            elif 'au' in self.api_base_url:
+                                domain = f"app-{workspace_id}.au.frontegg.com"
+                            else:  # EU/default
+                                domain = f"app-{workspace_id}.frontegg.com"
+                            print(f"  ✅ Generated domain: {domain}")
+                
+                return domain, origins
             else:
-                print(f"    ⚠️  Could not fetch permissions: {response.status_code}")
+                print(f"  ❌ Authentication failed: {response.status_code}")
+                if response.text:
+                    print(f"      Error: {response.text}")
+                return None, []
+                
         except Exception as e:
-            print(f"    ❌ Error discovering permissions: {e}")
-        
-        print(f"  📊 Imported {imported_count} roles and permissions")
-        return imported_count > 0
+            print(f"  ❌ Error during authentication: {e}")
+            return None, []
     
-    def discover_email_resources(self):
-        """Discover and import email templates and provider."""
-        print("\n📧 Discovering email resources...")
-        
+    def get_vendor_info(self):
+        """Get vendor information including loginURL."""
         if not self.access_token:
-            if not self.authenticate_minimal():
-                print("  ⚠️  Could not authenticate for email discovery")
-                return
-        
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        if self.selected_environment:
-            headers["frontegg-environment-id"] = self.selected_environment['id']
-        
-        imported_count = 0
-        
-        # 1. Import email provider (singleton)
-        print("  → Importing email provider...")
-        
-        # Create minimal config for email provider
-        provider_config = '''
-resource "frontegg_email_provider" "main" {
-  from_email = "noreply@example.com"
-  from_name  = "My App"
-}
-'''
-        with open("email_provider.tf", "w") as f:
-            f.write(provider_config)
-        
-        success, output = self.run_command([
-            "terraform", "import",
-            "frontegg_email_provider.main",
-            "singleton"
-        ])
-        
-        # Clean up
-        if os.path.exists("email_provider.tf"):
-            os.remove("email_provider.tf")
-        if success or "Import successful" in output or "Already exists in the state" in output:
-            print("    ✅ Email provider imported")
-            imported_count += 1
-        else:
-            print(f"    ⚠️  Could not import email provider")
-        
-        # 2. Discover and import email templates
-        print("  → Discovering email templates...")
-        templates_url = f"{self.api_base_url}/identity/resources/mail/v1/configs/templates"
+            self.authenticate_minimal()
         
         try:
-            response = requests.get(templates_url, headers=headers)
+            vendor_url = f"{self.api_base_url}/vendors"
+            response = requests.get(
+                vendor_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            if response.status_code == 200:
+                vendor_data = response.json()
+                login_url = vendor_data.get('loginURL', '')
+                if login_url:
+                    return login_url
+                    
+        except Exception as e:
+            print(f"  ⚠️  Could not get vendor info: {e}")
+        
+        return None
+    
+    def discover_additional_resources_via_api(self):
+        """Discover resources via API that can't be imported to Terraform but can be created."""
+        print("\n🔍 Discovering additional resources via API...")
+        resources = {}
+        
+        # Authenticate if needed
+        if not self.access_token:
+            domain, _ = self.authenticate_minimal()
+            if not domain:
+                print("  ❌ Failed to authenticate for API discovery")
+                return resources
+        
+        # Discover email templates
+        print("  📧 Fetching email templates...")
+        try:
+            templates_url = f"{self.api_base_url}/identity/resources/mail/v1/configs/templates"
+            response = requests.get(
+                templates_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
             if response.status_code == 200:
                 data = response.json()
                 # The response might be wrapped in a data field or be a list directly
                 templates = data if isinstance(data, list) else data.get('items', data.get('data', []))
                 
                 if templates and isinstance(templates, list):
-                    print(f"    Found {len(templates)} email templates")
-                    
-                    for template in templates:
-                        # Debug: see what fields are available
-                        template_type = template.get('templateType', template.get('type', ''))
-                        if not template_type and isinstance(template, dict):
-                            # Try to find any identifier
-                            template_type = template.get('id', template.get('name', ''))
-                            
-                        if template_type:
-                            # Import each template
-                            resource_name = f"frontegg_email_template.{template_type.lower().replace(' ', '_').replace('-', '_')}"
-                            print(f"    → Importing template: {template_type}")
-                            
-                            # First create a minimal config for the template
-                            safe_name = template_type.lower().replace(' ', '_').replace('-', '_')
-                            template_config = f'''
-resource "frontegg_email_template" "{safe_name}" {{
-  template_type = "{template_type}"
-  from_address  = "noreply@example.com"
-  from_name     = "My App"
-  subject       = "Email"
-  html_template = "<html></html>"
-  redirect_url  = ""
-  active        = true
-}}
-'''
-                            # Write to a temporary file
-                            temp_file = f"email_template_{safe_name}.tf"
-                            with open(temp_file, "w") as f:
-                                f.write(template_config)
-                            
-                            success, output = self.run_command([
-                                "terraform", "import",
-                                resource_name,
-                                template_type
-                            ])
-                            
-                            # Clean up temporary file
-                            if os.path.exists(temp_file):
-                                os.remove(temp_file)
-                            
-                            if success or "Import successful" in output or "Already exists in the state" in output:
-                                print(f"      ✅ Imported: {template_type}")
-                                imported_count += 1
-                            else:
-                                print(f"      ⚠️  Could not import: {template_type}")
+                    print(f"    ✅ Found {len(templates)} email templates")
+                    resources['email_templates'] = templates
                 else:
                     print("    ⚠️  No templates found")
             else:
-                print(f"    ⚠️  Could not fetch templates: {response.status_code}")
+                print(f"    ❌ Could not fetch templates: {response.status_code}")
         except Exception as e:
-            print(f"    ❌ Error discovering templates: {e}")
+            print(f"    ❌ Error fetching templates: {e}")
         
-        print(f"  📊 Imported {imported_count} email resources")
-        return imported_count > 0
-    
-    def setup_workspace(self):
-        """Initial setup - import existing workspace to Terraform."""
-        print("\n🚀 Setting up Terraform with existing workspace")
+        # Discover email provider configuration
+        print("  📧 Fetching email provider configuration...")
+        try:
+            provider_url = f"{self.api_base_url}/identity/resources/mail/v1/configs/provider"
+            response = requests.get(
+                provider_url,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            if response.status_code == 200:
+                provider = response.json()
+                if provider:
+                    print(f"    ✅ Found email provider configuration")
+                    resources['email_provider'] = provider
+            else:
+                print(f"    ⚠️  No email provider configured")
+        except Exception as e:
+            print(f"    ❌ Error fetching provider: {e}")
+        
+        return resources
+            
+    def export_configuration(self):
+        """Export all configuration from source account."""
+        print("\n🚀 Exporting configuration from source account")
         print("="*50)
         
-        # Create minimal terraform.tfvars if it doesn't exist
-        if not os.path.exists("terraform.tfvars"):
-            print("\n📝 Creating initial terraform.tfvars...")
-            initial_tfvars = f'''# Initial Frontegg configuration
-frontegg_client_id  = "{self.client_id}"
-frontegg_secret_key = "{self.secret_key}"
-frontegg_region      = "{self.region}"
-frontegg_domain     = "temp.frontegg.com"
-allowed_origins     = ["http://localhost:3000"]
-'''
-            with open("terraform.tfvars", "w") as f:
-                f.write(initial_tfvars)
-            print("✅ Created initial terraform.tfvars")
+        # Setup terraform.tfvars for source account
+        self.setup_tfvars_for_account('source')
         
-        # Initialize Terraform if needed
+        # Create minimal workspace.tf if it doesn't exist
+        if not os.path.exists("workspace.tf"):
+            print("\n📝 Creating temporary workspace configuration...")
+            workspace_config = """resource "frontegg_workspace" "main" {
+  name                = "Temporary"
+  country             = "US"
+  backend_stack       = "Node"
+  frontend_stack      = "React"
+  frontegg_domain     = var.frontegg_domain
+  allowed_origins     = var.allowed_origins
+  open_saas_installed = false
+}"""
+            with open("workspace.tf", "w") as f:
+                f.write(workspace_config)
+        
+        # Initialize Terraform
         print("\n🔧 Initializing Terraform...")
         success, output = self.run_command(["terraform", "init"])
         if not success and "There are some problems with the configuration" not in output:
@@ -435,329 +292,426 @@ allowed_origins     = ["http://localhost:3000"]
             sys.exit(1)
         print("✅ Terraform initialized")
         
-        # Check if workspace already imported
-        print("\n📦 Checking workspace status...")
+        # Check if workspace is already in state
         success, output = self.run_command(["terraform", "state", "list"])
-        
-        if success and "frontegg_workspace.main" in output:
-            print("  ✅ Workspace already imported to Terraform")
-        else:
-            print("  → Importing workspace to Terraform...")
-            
-            # Create minimal workspace configuration for import
-            workspace_config = """
-resource "frontegg_workspace" "main" {
-  name                = "Imported"
-  country             = "US"
-  backend_stack       = "Node"
-  frontend_stack      = "React"
-  open_saas_installed = false
-  frontegg_domain     = "imported.frontegg.com"
-  allowed_origins     = ["http://localhost:3000"]
-  
-  mfa_policy {
-    enforce = "off"
-    allow_remember_device = false
-    device_expiration = 1440
-  }
-  
-  password_policy {
-    min_length = 8
-    max_length = 128
-    min_phrase_length = 20
-    min_tests = 0
-    allow_passphrases = true
-    history = 1
-  }
-}
-"""
-            with open("workspace.tf", "w") as f:
-                f.write(workspace_config)
-                
-            success, output = self.run_command([
-                "terraform", "import", 
-                "frontegg_workspace.main", 
-                "singleton"
-            ])
-            
-            if success or "Import successful" in output or "Already exists in the state" in output:
-                print("  ✅ Workspace imported successfully")
-            else:
-                print(f"  ❌ Failed to import: {output}")
+        if not success or "frontegg_workspace.main" not in output:
+            print("\n📥 Importing existing workspace from source account...")
+            success, output = self.run_command(["terraform", "import", "frontegg_workspace.main", "singleton"])
+            if not success:
+                print(f"❌ Failed to import workspace: {output}")
                 sys.exit(1)
+            print("✅ Workspace imported")
         
-        # Refresh state
-        print("\n🔄 Refreshing Terraform state...")
-        success, output = self.run_command(["terraform", "refresh"])
-        if not success and "Missing required argument" not in output:
-            print(f"⚠️  Warning during refresh: {output}")
-        
-        # Generate proper Terraform configuration from state
-        print("\n📝 Generating Terraform configuration from state...")
+        # Export Terraform state
+        print("\n📦 Exporting Terraform state...")
         success, output = self.run_command(["terraform", "show", "-json"])
         
-        if success:
-            state = json.loads(output)
+        if not success:
+            print("❌ Failed to export Terraform state")
+            print(f"Error: {output}")
+            sys.exit(1)
             
-            # Get workspace info from API (domain and origins)
-            if self.authenticate_minimal():
-                api_info = self.get_workspace_info()
-                if api_info:
-                    print(f"  ✅ Got domain: {api_info['frontegg_domain']}")
-                    print(f"  ✅ Got {len(api_info['allowed_origins'])} allowed origins")
+        state = json.loads(output)
+        
+        # Discover additional resources via API
+        additional_resources = self.discover_additional_resources_via_api()
+        
+        # Create enhanced export with both Terraform state and API resources
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"terraform_export_{timestamp}.json"
+        
+        enhanced_export = {
+            "terraform_state": state,
+            "api_resources": additional_resources,
+            "metadata": {
+                "exported_at": timestamp,
+                "source_region": self.region,
+                "source_api_url": self.api_base_url
+            }
+        }
+        
+        with open(filename, "w") as f:
+            json.dump(enhanced_export, f, indent=2)
+            
+        print(f"\n✅ Export complete!")
+        print(f"📄 Configuration saved to: {filename}")
+        
+        # Show summary
+        if state.get('values', {}).get('root_module', {}).get('resources'):
+            resources = state['values']['root_module']['resources']
+            for resource in resources:
+                if resource['type'] == 'frontegg_workspace':
+                    values = resource['values']
+                    print("\n📊 Exported security settings:")
+                    mfa = values.get('mfa_policy', [{}])[0] if values.get('mfa_policy') else {}
+                    pwd = values.get('password_policy', [{}])[0] if values.get('password_policy') else {}
+                    print(f"  • MFA: {mfa.get('enforce', 'off')}")
+                    print(f"  • Password policy: min {pwd.get('min_length', 8)} chars")
+                    print(f"  • Open SaaS: {values.get('open_saas_installed', False)}")
+                    print(f"  • Has SAML: {bool(values.get('saml'))}")
+                    print(f"  • Has OIDC: {bool(values.get('oidc'))}")
                     
-                    # Find workspace in state and update
-                    for resource in state.get('values', {}).get('root_module', {}).get('resources', []):
-                        if resource['type'] == 'frontegg_workspace':
-                            resource['values']['frontegg_domain'] = api_info['frontegg_domain']
-                            resource['values']['allowed_origins'] = api_info['allowed_origins']
-                            
-                            # Generate configuration
-                            config = self.generate_terraform_config(resource['values'])
-                            
-                            # Save configuration
-                            with open("workspace.tf", "w") as f:
-                                f.write(config)
-                            
-                            print("✅ Generated workspace.tf with complete configuration")
-                            
-                            # Also create terraform.tfvars
-                            self.create_tfvars(api_info, resource['values'])
-                            
-                            break
+        if additional_resources:
+            print("\n📦 Additional resources discovered via API:")
+            for resource_type, resources in additional_resources.items():
+                if isinstance(resources, list):
+                    print(f"  • {resource_type}: {len(resources)} items")
+                else:
+                    print(f"  • {resource_type}: configured")
+                    
+        return filename
+    
+    def setup_tfvars_for_account(self, account_type: str):
+        """Setup terraform.tfvars for the specified account."""
+        # Get credentials for the account
+        if account_type == 'source':
+            client_id = os.environ.get('SOURCE_FRONTEGG_CLIENT_ID')
+            secret_key = os.environ.get('SOURCE_FRONTEGG_SECRET_KEY')
+            region = os.environ.get('SOURCE_FRONTEGG_REGION', 'US')
+        else:  # dest
+            client_id = os.environ.get('DEST_FRONTEGG_CLIENT_ID')
+            secret_key = os.environ.get('DEST_FRONTEGG_SECRET_KEY')
+            region = os.environ.get('DEST_FRONTEGG_REGION', 'US')
         
-        # Note: Most Frontegg resources don't support Terraform import
-        # Only workspace can be imported. Other resources like email templates,
-        # roles, permissions, webhooks, etc. cannot be imported via Terraform
-        # even though they can be discovered via API.
+        # Temporarily set credentials for API call
+        temp_client_id = self.client_id
+        temp_secret_key = self.secret_key
+        self.client_id = client_id
+        self.secret_key = secret_key
         
-        print("\n✅ Setup complete!")
-        print("\nYou can now:")
-        print("1. Run 'terraform plan' to review configuration")
-        print("2. Run 'python3 terraform_migrate.py export' to export settings")
+        # Get domain and origins
+        domain, origins = self.authenticate_minimal()
         
-    def create_tfvars(self, api_info, workspace):
-        """Create terraform.tfvars with discovered values."""
-        import time
+        # Restore original credentials
+        self.client_id = temp_client_id
+        self.secret_key = temp_secret_key
         
-        tfvars_content = f'''# Auto-generated Frontegg configuration
-# Generated on {time.strftime("%Y-%m-%d %H:%M:%S")}
+        if not domain:
+            print(f"❌ Failed to get domain for {account_type} account")
+            sys.exit(1)
+        
+        # For destination account, get existing workspace info or use defaults
+        if account_type == 'dest':
+            # Try to get existing workspace settings via Terraform
+            workspace_name = "My Workspace"  # Default
+            country = "US"  # Default
+            backend_stack = "Node"  # Default
+            frontend_stack = "React"  # Default
+            
+            # Check if workspace already exists
+            success, output = self.run_command(["terraform", "state", "show", "frontegg_workspace.main"])
+            if success and output:
+                # Parse existing workspace settings
+                for line in output.split('\n'):
+                    if 'name' in line and '=' in line:
+                        workspace_name = line.split('=')[1].strip().strip('"')
+                    elif 'country' in line and '=' in line:
+                        country = line.split('=')[1].strip().strip('"')
+                    elif 'backend_stack' in line and '=' in line:
+                        backend_stack = line.split('=')[1].strip().strip('"')
+                    elif 'frontend_stack' in line and '=' in line:
+                        frontend_stack = line.split('=')[1].strip().strip('"')
+        
+        # Create terraform.tfvars
+        tfvars_content = f"""# Auto-generated Frontegg configuration for {account_type} account
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 # Credentials
-frontegg_client_id  = "{self.client_id}"
-frontegg_secret_key = "{self.secret_key}"
+frontegg_client_id  = "{client_id}"
+frontegg_secret_key = "{secret_key}"
 
 # Region configuration
-frontegg_region = "{self.region}"
+frontegg_region = "{region}"
 
 # Discovered values
-frontegg_domain = "{api_info.get('frontegg_domain', '')}"
-allowed_origins = {json.dumps(api_info.get('allowed_origins', []), indent=2)}
-
-# Workspace settings
-workspace_name  = "{workspace.get('name', 'My Application')}"
-country         = "{workspace.get('country', 'US')}"
-backend_stack   = "{workspace.get('backend_stack', 'Node')}"
-frontend_stack  = "{workspace.get('frontend_stack', 'React')}"
-'''
+frontegg_domain = "{domain}"
+allowed_origins = {json.dumps(origins, indent=2)}
+"""
+        
+        # Add workspace settings for destination account
+        if account_type == 'dest':
+            tfvars_content += f"""
+# Workspace settings (destination account values)
+workspace_name  = "{workspace_name}"
+country         = "{country}"
+backend_stack   = "{backend_stack}"
+frontend_stack  = "{frontend_stack}"
+"""
         
         with open("terraform.tfvars", "w") as f:
             f.write(tfvars_content)
         
-        print("✅ Created terraform.tfvars with all values")
-    
-    def export_configuration(self):
-        """Export configuration from source account using Terraform."""
-        print("\n🚀 Exporting configuration from source account")
+        print(f"✅ Created terraform.tfvars for {account_type} account")
+        
+    def import_configuration(self, export_file: str):
+        """Import configuration to destination account."""
+        print("\n🚀 Importing configuration to destination account")
         print("="*50)
         
-        # Initialize Terraform if needed
-        print("\n🔧 Initializing Terraform...")
-        success, output = self.run_command(["terraform", "init"])
-        if not success:
-            print(f"❌ Failed to initialize Terraform: {output}")
-            sys.exit(1)
+        # Load the export file
+        print(f"\n📂 Loading export from: {export_file}")
+        with open(export_file, "r") as f:
+            data = json.load(f)
         
-        # Import workspace if not already imported
-        print("\n📦 Checking workspace status...")
-        success, output = self.run_command(["terraform", "state", "list"])
-        if success and "frontegg_workspace.main" not in output:
-            print("  → Importing workspace...")
-            
-            # Create minimal workspace configuration for import
-            workspace_config = """
-resource "frontegg_workspace" "main" {
-  name                = "Imported"
-  country             = "US"
-  backend_stack       = "Node"
-  frontend_stack      = "React"
-  open_saas_installed = false
-  frontegg_domain     = "imported.frontegg.com"
-  allowed_origins     = ["http://localhost:3000"]
-  
-  mfa_policy {
-    enforce = "off"
-    allow_remember_device = false
-    device_expiration = 1440
-  }
-  
-  password_policy {
-    min_length = 8
-    max_length = 128
-    min_phrase_length = 20
-    min_tests = 0
-    allow_passphrases = true
-    history = 1
-  }
-}
-"""
-            with open("workspace_temp.tf", "w") as f:
-                f.write(workspace_config)
-                
-            success, output = self.run_command([
-                "terraform", "import", 
-                "frontegg_workspace.main", 
-                "singleton"
-            ])
-            
-            if os.path.exists("workspace_temp.tf"):
-                os.remove("workspace_temp.tf")
-        else:
-            print("  ✅ Workspace already in state")
+        # Extract Terraform state and API resources
+        terraform_state = data.get('terraform_state', {})
+        api_resources = data.get('api_resources', {})
         
-        # Refresh state
-        print("\n🔄 Refreshing state...")
-        self.run_command(["terraform", "refresh"])
+        # Setup terraform.tfvars for destination account
+        self.setup_tfvars_for_account('dest')
         
-        # Get state as JSON
-        print("\n📤 Exporting state...")
-        success, output = self.run_command(["terraform", "show", "-json"])
-        
-        if success:
-            state = json.loads(output)
-            
-            # Get workspace info from API (domain and origins)
-            if self.authenticate_minimal():
-                api_info = self.get_workspace_info()
-                if api_info:
-                    print(f"  ✅ Got domain: {api_info['frontegg_domain']}")
-                    print(f"  ✅ Got {len(api_info['allowed_origins'])} allowed origins")
-                    
-                    # Update state with API info
-                    for resource in state.get('values', {}).get('root_module', {}).get('resources', []):
-                        if resource['type'] == 'frontegg_workspace':
-                            resource['values']['frontegg_domain'] = api_info['frontegg_domain']
-                            resource['values']['allowed_origins'] = api_info['allowed_origins']
-            
-            # Save export
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_file = f"terraform_export_{timestamp}.json"
-            
-            with open(export_file, "w") as f:
-                json.dump(state, f, indent=2)
-            
-            print(f"\n💾 Configuration exported to: {export_file}")
-            
-            # Display summary
-            resources = state.get('values', {}).get('root_module', {}).get('resources', [])
-            for resource in resources:
+        # Extract workspace configuration from export
+        workspace = None
+        if terraform_state.get('values', {}).get('root_module', {}).get('resources'):
+            for resource in terraform_state['values']['root_module']['resources']:
                 if resource['type'] == 'frontegg_workspace':
                     workspace = resource['values']
-                    print("\n📊 Exported Workspace:")
-                    print(f"  • Name: {workspace.get('name')}")
-                    print(f"  • Domain: {workspace.get('frontegg_domain')}")
-                    print(f"  • Country: {workspace.get('country')}")
-                    print(f"  • Backend: {workspace.get('backend_stack')}")
-                    print(f"  • Frontend: {workspace.get('frontend_stack')}")
-                    
-            print("\n✅ Export complete!")
-            print("\nNext steps:")
-            print("1. Update .env with target account credentials")
-            print(f"2. Run: python3 terraform_migrate.py import {export_file}")
-            
-            return export_file
-        else:
-            print("❌ Failed to export state")
-            return None
-            
-    def import_configuration(self, export_file):
-        """Import configuration to target account."""
-        print(f"\n🚀 Importing configuration to target account")
-        print("="*50)
-        
-        # Load export file
-        print(f"\n📂 Loading export from: {export_file}")
-        try:
-            with open(export_file, 'r') as f:
-                state = json.load(f)
-        except Exception as e:
-            print(f"❌ Failed to load export: {e}")
-            sys.exit(1)
-        
-        # Find workspace in state
-        workspace = None
-        for resource in state.get('values', {}).get('root_module', {}).get('resources', []):
-            if resource['type'] == 'frontegg_workspace':
-                workspace = resource['values']
-                break
+                    break
         
         if not workspace:
-            print("❌ No workspace found in export")
+            print("❌ No workspace configuration found in export")
             sys.exit(1)
         
-        # Get new domain and origins for target account
-        if self.authenticate_minimal():
-            api_info = self.get_workspace_info()
-            if api_info:
-                # For target account, we need to use its own domain
-                workspace['frontegg_domain'] = api_info['frontegg_domain']
-                print(f"  ✅ Using target domain: {workspace['frontegg_domain']}")
+        # Handle existing workspace.tf
+        if os.path.exists("workspace.tf"):
+            print("\n⚠️  Found existing workspace.tf, backing it up...")
+            os.rename("workspace.tf", "workspace.tf.backup")
+            print("  ✅ Moved workspace.tf to workspace.tf.backup")
         
         # Generate Terraform configuration
         print("\n📝 Generating Terraform configuration...")
-        config = self.generate_terraform_config(workspace)
+        workspace_config = self.generate_terraform_config(workspace)
         
-        # Save configuration
-        with open("workspace_migrated.tf", "w") as f:
-            f.write(config)
+        # Save workspace configuration
+        with open("workspace.tf", "w") as f:
+            f.write(workspace_config)
         
-        print("✅ Configuration saved to: workspace_migrated.tf")
+        # Get destination account's loginURL for email templates
+        login_url = None
+        if api_resources and 'email_templates' in api_resources:
+            print("\n🔍 Getting destination account's login URL...")
+            # Make sure we're using destination credentials
+            temp_client = self.client_id
+            temp_secret = self.secret_key
+            self.client_id = os.environ.get('DEST_FRONTEGG_CLIENT_ID')
+            self.secret_key = os.environ.get('DEST_FRONTEGG_SECRET_KEY')
+            
+            login_url = self.get_vendor_info()
+            if login_url:
+                print(f"  ✅ Login URL: {login_url}")
+            else:
+                print(f"  ⚠️  Could not get login URL, will use empty redirect URLs")
+            
+            # Restore credentials
+            self.client_id = temp_client
+            self.secret_key = temp_secret
         
-        print("\n📊 Configuration to apply:")
-        print(f"  • Name: {workspace.get('name')}")
-        print(f"  • Domain: {workspace.get('frontegg_domain')}")
-        print(f"  • Country: {workspace.get('country')}")
-        print(f"  • MFA: {workspace.get('mfa_policy', [{}])[0].get('enforce', 'off')}")
-        print(f"  • Password min length: {workspace.get('password_policy', [{}])[0].get('min_length', 8)}")
+        # Generate configurations for API resources (email templates, etc.)
+        if api_resources:
+            print("\n📝 Generating configurations for API resources...")
+            
+            # Generate email templates configuration
+            if 'email_templates' in api_resources:
+                email_config = self.generate_email_templates_config(api_resources['email_templates'], login_url)
+                with open("email_templates_imported.tf", "w") as f:
+                    f.write(email_config)
+                # Count supported templates
+                supported_count = email_config.count('resource "frontegg_email_template"')
+                total_count = len(api_resources['email_templates'])
+                if supported_count < total_count:
+                    print(f"  ✅ Generated config for {supported_count}/{total_count} email templates (only supported types)")
+                else:
+                    print(f"  ✅ Generated config for {supported_count} email templates")
+            
+            # Generate email provider configuration
+            if 'email_provider' in api_resources:
+                provider_config = self.generate_email_provider_config(api_resources['email_provider'])
+                with open("email_provider_imported.tf", "w") as f:
+                    f.write(provider_config)
+                print(f"  ✅ Generated config for email provider")
         
-        print("\n✅ Import complete!")
-        print("\nNext steps:")
-        print("1. Review workspace_migrated.tf")
-        print("2. Run: terraform init")
-        print("3. Run: terraform plan")
-        print("4. Run: terraform apply")
+        print("\n✅ Configuration files generated!")
         
+        # Initialize Terraform for destination
+        print("\n🔧 Initializing Terraform for destination...")
+        success, output = self.run_command(["terraform", "init"])
+        if not success and "There are some problems with the configuration" not in output:
+            print(f"⚠️  Terraform init had warnings: {output}")
+        
+        print("\n📊 Security settings to apply from source:")
+        mfa_policy = workspace.get('mfa_policy', [{}])[0] if workspace.get('mfa_policy') else {}
+        pwd_policy = workspace.get('password_policy', [{}])[0] if workspace.get('password_policy') else {}
+        print(f"  • MFA: {mfa_policy.get('enforce', 'off')}")
+        print(f"  • Password min length: {pwd_policy.get('min_length', 8)}")
+        print(f"  • Open SaaS: {workspace.get('open_saas_installed', False)}")
+        
+        if api_resources:
+            print("\n📦 Additional resources to create:")
+            for resource_type, resources in api_resources.items():
+                if isinstance(resources, list):
+                    print(f"  • {resource_type}: {len(resources)} items")
+                else:
+                    print(f"  • {resource_type}: configured")
+        
+        print("\n✅ Configuration prepared!")
+        
+        # Run terraform plan
+        print("\n📋 Running terraform plan...")
+        success, output = self.run_command(["terraform", "plan", "-out=tfplan"])
+        
+        if not success and "Error:" in output:
+            print("❌ Terraform plan failed:")
+            print(output[:500])  # Show first 500 chars of error
+            return
+        
+        # Check if there are changes to apply
+        if "No changes" in output:
+            print("✅ No changes needed. Infrastructure is up-to-date.")
+            return
+        
+        # Show summary of changes
+        print("\n📊 Changes to apply:")
+        # Extract plan summary
+        for line in output.split('\n'):
+            if 'Plan:' in line:
+                print(f"  {line.strip()}")
+                break
+        
+        # Auto-apply the changes
+        print("\n🚀 Applying configuration to destination account...")
+        print("  This will create/update the resources in your destination account.")
+        
+        # Use the saved plan file
+        success, output = self.run_command(["terraform", "apply", "tfplan"])
+        
+        if success or "Apply complete!" in output:
+            print("\n✅ Migration applied successfully!")
+            
+            # Show what was created
+            for line in output.split('\n'):
+                if 'Apply complete!' in line:
+                    print(f"  {line.strip()}")
+                    break
+                elif 'added,' in line or 'changed,' in line:
+                    print(f"  {line.strip()}")
+            
+            print("\n🎉 Migration complete! Your destination account now has:")
+            print("  • Updated security policies from source")
+            if api_resources.get('email_templates'):
+                print("  • Email templates with all customizations (including 'test' from_name)")
+            print("\n  You can verify the changes in your Frontegg portal.")
+        else:
+            print("\n⚠️  Apply may have had issues. Check the output.")
+            if not success:
+                print(f"Error output: {output[:500]}")
+        
+    def generate_email_templates_config(self, templates: List[Dict], login_url: str = None) -> str:
+        """Generate Terraform configuration for email templates."""
+        # Only include template types supported by Terraform provider
+        supported_types = [
+            "ResetPassword", "ActivateUser", "InviteToTenant", "PwnedPassword",
+            "MagicLink", "OTC", "ConnectNewDevice", "UserUsedInvitation",
+            "ResetPhoneNumber", "BulkInvitesToTenant", "MFAEnroll", "MFAUnenroll",
+            "NewMFAMethod", "MFARecoveryCode", "RemoveMFAMethod", "EmailVerification",
+            "BruteForceProtection", "SuspiciousIP", "MFAOTC", "ImpossibleTravel",
+            "BotDetection", "SmsAuthenticationEnabled"
+        ]
+        
+        # Template-specific redirect URL patterns
+        redirect_patterns = {
+            "ResetPassword": "/account/reset-password",
+            "ActivateUser": "/account/activate",
+            "InviteToTenant": "/account/invitation/accept",
+            "MagicLink": "/account/magic-link",
+            "EmailVerification": "/account/verify-email",
+            "BulkInvitesToTenant": "/account/invitation/accept",
+        }
+        
+        config_lines = ['# Email Templates']
+        config_lines.append('# Generated from source account')
+        config_lines.append('# Note: Only template types supported by Terraform provider are included\n')
+        
+        included_count = 0
+        for template in templates:
+            template_type = template.get('templateType', template.get('type', ''))
+            if not template_type or template_type not in supported_types:
+                continue
+            
+            included_count += 1
+            safe_name = template_type.lower().replace(' ', '_').replace('-', '_')
+            
+            config_lines.append(f'resource "frontegg_email_template" "{safe_name}" {{')
+            config_lines.append(f'  template_type = "{template_type}"')
+            config_lines.append(f'  from_address  = "{template.get("fromAddress", "noreply@example.com")}"')
+            config_lines.append(f'  from_name     = "{template.get("fromName", "My App")}"')
+            config_lines.append(f'  subject       = "{self.escape_terraform_string(template.get("subject", ""))}"')
+            config_lines.append(f'  html_template = <<-EOT')
+            config_lines.append(template.get('htmlTemplate', '<html><body>Template content</body></html>'))
+            config_lines.append('EOT')
+            
+            # Handle redirect_url - use destination's loginURL if available
+            redirect_url = template.get("redirectUrl", "")
+            
+            # If we have a loginURL and this template type needs a redirect URL
+            if login_url and template_type in redirect_patterns:
+                # Construct the full redirect URL using destination's loginURL
+                redirect_url = f"{login_url}{redirect_patterns[template_type]}"
+                config_lines.append(f'  redirect_url  = "{redirect_url}"')
+            elif redirect_url and redirect_url.startswith("http"):
+                # Use the original URL if it's valid
+                config_lines.append(f'  redirect_url  = "{redirect_url}"')
+            else:
+                # Provider requires the field, use empty string
+                config_lines.append(f'  redirect_url  = ""')
+            
+            config_lines.append(f'  active        = {str(template.get("active", True)).lower()}')
+            config_lines.append('}\n')
+        
+        if included_count == 0:
+            config_lines = ['# No email templates with supported types found']
+        
+        return '\n'.join(config_lines)
+    
+    def generate_email_provider_config(self, provider: Dict) -> str:
+        """Generate Terraform configuration for email provider."""
+        config_lines = ['# Email Provider Configuration']
+        config_lines.append('# Generated from source account\n')
+        
+        config_lines.append('resource "frontegg_email_provider" "main" {')
+        config_lines.append(f'  from_email = "{provider.get("fromEmail", "noreply@example.com")}"')
+        config_lines.append(f'  from_name  = "{provider.get("fromName", "My App")}"')
+        
+        # Add provider-specific configuration if available
+        if provider.get('type'):
+            config_lines.append(f'  # Provider type: {provider.get("type")}')
+        
+        config_lines.append('}')
+        
+        return '\n'.join(config_lines)
+    
+    def escape_terraform_string(self, s: str) -> str:
+        """Escape a string for use in Terraform configuration."""
+        if not s:
+            return ""
+        # Escape backslashes and quotes
+        return s.replace('\\', '\\\\').replace('"', '\\"')
+    
     def generate_terraform_config(self, workspace: Dict) -> str:
         """Generate Terraform configuration from workspace state."""
         config_lines = []
         
         config_lines.append('resource "frontegg_workspace" "main" {')
-        config_lines.append(f'  name                = "{workspace.get("name", "")}"')
-        config_lines.append(f'  country             = "{workspace.get("country", "")}"')
+        # Use destination account's own values for these fields
+        config_lines.append('  # These use destination account values, not source')
+        config_lines.append('  name                = var.workspace_name')
+        config_lines.append('  country             = var.country')
+        config_lines.append('  backend_stack       = var.backend_stack')
+        config_lines.append('  frontend_stack      = var.frontend_stack')
+        config_lines.append('  frontegg_domain     = var.frontegg_domain')
+        config_lines.append('  allowed_origins     = var.allowed_origins')
         
-        # Fix backend_stack values (API returns "Node" but sometimes we see "Node.js")
-        backend = workspace.get("backend_stack", "")
-        if backend == "Node.js":
-            backend = "Node"
-        config_lines.append(f'  backend_stack       = "{backend}"')
-        config_lines.append(f'  frontend_stack      = "{workspace.get("frontend_stack", "")}"')
+        # Copy open_saas_installed from source
         config_lines.append(f'  open_saas_installed = {str(workspace.get("open_saas_installed", False)).lower()}')
-        config_lines.append(f'  frontegg_domain     = "{workspace.get("frontegg_domain", "")}"')
-        
-        # Allowed origins
-        if workspace.get('allowed_origins'):
-            origins_list = json.dumps(workspace['allowed_origins'], indent=4).replace('\n', '\n  ')
-            config_lines.append(f'  allowed_origins = {origins_list}')
         
         # MFA Policy
         if workspace.get('mfa_policy'):
@@ -765,8 +719,8 @@ resource "frontegg_workspace" "main" {
             config_lines.append('')
             config_lines.append('  mfa_policy {')
             config_lines.append(f'    enforce               = "{mfa.get("enforce", "off")}"')
-            config_lines.append(f'    allow_remember_device = {str(mfa.get("allow_remember_device", False)).lower()}')
-            config_lines.append(f'    device_expiration     = {mfa.get("device_expiration", 1440)}')
+            config_lines.append(f'    allow_remember_device = {str(mfa.get("allow_remember_device", True)).lower()}')
+            config_lines.append(f'    device_expiration     = {mfa.get("device_expiration", 1209600)}')
             config_lines.append('  }')
         
         # MFA Authentication App
@@ -786,7 +740,7 @@ resource "frontegg_workspace" "main" {
             config_lines.append(f'    min_length        = {pwd.get("min_length", 8)}')
             config_lines.append(f'    max_length        = {pwd.get("max_length", 128)}')
             config_lines.append(f'    min_phrase_length = {pwd.get("min_phrase_length", 6)}')
-            config_lines.append(f'    min_tests         = {pwd.get("min_tests", 0)}')
+            config_lines.append(f'    min_tests         = {pwd.get("min_tests", 3)}')
             config_lines.append(f'    allow_passphrases = {str(pwd.get("allow_passphrases", False)).lower()}')
             config_lines.append(f'    history           = {pwd.get("history", 0)}')
             config_lines.append('  }')
@@ -831,43 +785,70 @@ resource "frontegg_workspace" "main" {
         config_lines.append('}')
         
         return '\n'.join(config_lines)
+    
+    def migrate(self):
+        """Full migration from source to destination."""
+        print("\n🚀 Starting full migration from source to destination")
+        print("="*50)
+        
+        # Export from source
+        print("\n📤 STEP 1: Export from source account")
+        print("-"*50)
+        self.load_credentials('source')
+        export_file = self.export_configuration()
+        
+        # Import to destination
+        print("\n📥 STEP 2: Import to destination account")
+        print("-"*50)
+        self.load_credentials('dest')
+        self.import_configuration(export_file)
+        
+        print("\n✅ Migration complete!")
+        print("\nThe migration has been automatically applied to your destination account.")
+        print("Check your Frontegg portal to verify the changes.")
         
     def run(self):
         """Main entry point."""
         if len(sys.argv) < 2:
-            print("Frontegg Terraform Export/Import Tool")
+            print("Frontegg Terraform Migration Tool")
             print("="*50)
             print("\nUsage:")
-            print("  Setup:  python3 terraform_migrate.py setup")
-            print("          → Import existing workspace to Terraform (run this first!)")
-            print("")
             print("  Export: python3 terraform_migrate.py export")
-            print("          → Export all settings to JSON file")
+            print("          → Export from source account (uses SOURCE_* env vars)")
             print("")
             print("  Import: python3 terraform_migrate.py import <export_file.json>")
-            print("          → Import settings to another account")
+            print("          → Import to destination account (uses DEST_* env vars)")
             print("")
-            print("This tool uses Terraform for everything, with only 1 API call for domain/origins.")
+            print("  Migrate: python3 terraform_migrate.py migrate")
+            print("           → Full migration (export from source + import to dest)")
+            print("")
+            print("\nRequired environment variables in .env:")
+            print("  SOURCE_FRONTEGG_CLIENT_ID    - Source account client ID")
+            print("  SOURCE_FRONTEGG_SECRET_KEY   - Source account secret")
+            print("  SOURCE_FRONTEGG_REGION       - Source region (US, EU, UK, CA, AU)")
+            print("")
+            print("  DEST_FRONTEGG_CLIENT_ID      - Destination account client ID")
+            print("  DEST_FRONTEGG_SECRET_KEY     - Destination account secret")
+            print("  DEST_FRONTEGG_REGION         - Destination region")
             sys.exit(1)
         
         command = sys.argv[1].lower()
         
-        # Load credentials
-        self.load_credentials()
-        
-        if command == "setup":
-            self.setup_workspace()
-        elif command == "export":
+        if command == "export":
+            self.load_credentials('source')
             self.export_configuration()
         elif command == "import":
             if len(sys.argv) < 3:
                 print("Error: Please specify export file")
                 print("Usage: python3 terraform_migrate.py import <export_file.json>")
                 sys.exit(1)
+            self.load_credentials('dest')
             self.import_configuration(sys.argv[2])
+        elif command == "migrate":
+            self.migrate()
         else:
             print(f"Unknown command: {command}")
-            print("Use 'setup', 'export', or 'import'")
+            print("Use 'export', 'import', or 'migrate'")
             sys.exit(1)
 
 if __name__ == "__main__":
